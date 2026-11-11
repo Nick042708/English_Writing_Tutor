@@ -28,3 +28,8 @@ export const fetchHealth = () =>
 
 export const fetchMaterials = (payload) => post("/api/materials", payload);
 export const fetchFeedback = (payload) => post("/api/feedback", payload);
+export const updateProfile = (data) => post("/api/profile", data);
+export const fetchAllUsers = () => get("/api/admin/users");
+export const setMembership = (userId, months) => post(`/api/admin/users/${userId}/membership`, { months });
+export const revokeMembership = (userId) => post(`/api/admin/users/${userId}/membership`, { revoke: true });
+export const deleteUser = (userId) => request(`/api/admin/users/${userId}`, { method: "DELETE" });

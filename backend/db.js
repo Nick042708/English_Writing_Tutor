@@ -6,7 +6,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, "..", "data");
+// DATA_DIR 环境变量可覆盖数据目录（用于测试隔离），默认为项目根目录下的 data/
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, "..", "data");
 const DB_PATH = path.join(DATA_DIR, "db.json");
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || "";

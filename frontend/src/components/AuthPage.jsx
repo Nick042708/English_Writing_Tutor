@@ -6,6 +6,8 @@ export default function AuthPage({ onAuth }) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [realName, setRealName] = useState("");
+  const [school, setSchool] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -14,7 +16,12 @@ export default function AuthPage({ onAuth }) {
     setLoading(true);
     setError("");
     try {
-      const data = await post(mode === "login" ? "/api/login" : "/api/register", { username, password });
+      const data = await post(mode === "login" ? "/api/login" : "/api/register", {
+        username,
+        password,
+        realName,
+        school,
+      });
       setToken(data.token);
       onAuth(data.user);
     } catch (err) {
@@ -47,6 +54,25 @@ export default function AuthPage({ onAuth }) {
           autoComplete={mode === "login" ? "current-password" : "new-password"}
         />
 
+        {mode === "register" && (
+          <>
+            <div className="field-label">真实姓名</div>
+            <input
+              type="text"
+              value={realName}
+              onChange={(e) => setRealName(e.target.value)}
+              placeholder="用于管理员核对身份"
+            />
+            <div className="field-label">学校</div>
+            <input
+              type="text"
+              value={school}
+              onChange={(e) => setSchool(e.target.value)}
+              placeholder="如：XX中学 / XX大学"
+            />
+          </>
+        )}
+
         {error && <div className="error-box" style={{ marginTop: 12 }}>{error}</div>}
 
         <button className="btn" style={{ width: "100%" }} disabled={loading}>
@@ -70,9 +96,14 @@ export default function AuthPage({ onAuth }) {
             </>
           )}
         </div>
-        <div className="auth-hint">
-          提示：第一个注册的账号将自动成为管理员，可查看所有学员的素材与批改记录
-        </div>
+        {mode === "register" && (
+          <div className="auth-hint">注册后默认为游客账号（每天 5 次），联系管理员可升级为会员不限次数</div>
+        )}
+        {mode === "login" && (
+          <div className="auth-hint">
+            提示：第一个注册的账号将自动成为管理员，可查看所有学员的素材与批改记录
+          </div>
+        )}
       </form>
     </div>
   );

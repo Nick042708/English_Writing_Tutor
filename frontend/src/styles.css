@@ -371,3 +371,113 @@ textarea.essay { min-height: 220px; font-family: Georgia, "Times New Roman", ser
   border-radius: 999px;
   padding: 1px 9px;
 }
+
+/* ---------- 账号设置弹窗 ---------- */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 32, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 16px;
+}
+.modal-card {
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 20px 22px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 18px 50px rgba(15, 23, 32, 0.25);
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.modal-head h2 { margin: 0; font-size: 18px; }
+.account-summary {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 10px 0 14px;
+}
+.sum-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  padding: 4px 0;
+  color: var(--ink-2);
+}
+.sum-row b { color: var(--ink); }
+
+/* ---------- 会员徽章 ---------- */
+.plan-badge {
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.plan-badge.member {
+  background: linear-gradient(120deg, #b8860b22, #d4a01733);
+  color: #8a5a00;
+  border: 1px solid #d4a01766;
+}
+.plan-badge.guest {
+  background: var(--bg);
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+}
+
+/* ---------- 账号管理表格 ---------- */
+.table-wrap { overflow-x: auto; margin-top: 10px; }
+.user-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 760px;
+}
+.user-table th,
+.user-table td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.user-table th {
+  color: var(--ink-3);
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.row-actions select {
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.btn-ghost.danger { color: #b3372a; }
+
+/* ---------- 成功提示 ---------- */
+.ok-box {
+  background: var(--brand-weak);
+  color: var(--brand-ink);
+  border: 1px solid #b5e0d2;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .user-chip { flex-wrap: wrap; }
+}

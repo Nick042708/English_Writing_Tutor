@@ -4,7 +4,7 @@ import { Loading } from "./shared.jsx";
 import MaterialsResult from "./MaterialsResult.jsx";
 
 // 素材提供页：填写任务 → 生成 → 复用 MaterialsResult 展示（历史回看也用它）
-export default function MaterialsPage({ profile, task, setTask }) {
+export default function MaterialsPage({ profile, task, setTask, onUsed }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -18,6 +18,7 @@ export default function MaterialsPage({ profile, task, setTask }) {
     setError("");
     try {
       setResult(await fetchMaterials({ ...profile, task: task.trim() }));
+      onUsed?.();
     } catch (e) {
       setError(e.message);
     } finally {

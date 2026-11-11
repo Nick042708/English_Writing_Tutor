@@ -4,7 +4,7 @@ import { Loading } from "./shared.jsx";
 import FeedbackResult from "./FeedbackResult.jsx";
 
 // 写作批改页：填写任务与作文 → 批改 → 复用 FeedbackResult 展示（历史回看也用它）
-export default function FeedbackPage({ profile, task, setTask }) {
+export default function FeedbackPage({ profile, task, setTask, onUsed }) {
   const [essay, setEssay] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -23,6 +23,7 @@ export default function FeedbackPage({ profile, task, setTask }) {
     setError("");
     try {
       setResult(await fetchFeedback({ ...profile, task: task.trim(), essay: essay.trim() }));
+      onUsed?.();
     } catch (e) {
       setError(e.message);
     } finally {
