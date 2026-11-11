@@ -1,0 +1,19 @@
+# Render 部署蓝图：在 Render 中选择仓库后自动套用以下配置
+services:
+  - type: web
+    name: english-writing-tutor
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: npm install && cd ../frontend && npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: DEEPSEEK_API_KEY
+        sync: false # 部署时手动填入，不写入仓库
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
