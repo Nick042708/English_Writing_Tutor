@@ -20,6 +20,7 @@ async function request(path, { method = "POST", body } = {}) {
 
 export const post = (path, body) => request(path, { body });
 export const get = (path) => request(path, { method: "GET" });
+export const del = (path) => request(path, { method: "DELETE" });
 
 export const fetchHealth = () =>
   fetch("/api/health")

@@ -4,6 +4,7 @@ import MaterialsPage from "./components/MaterialsPage.jsx";
 import FeedbackPage from "./components/FeedbackPage.jsx";
 import HistoryPage from "./components/HistoryPage.jsx";
 import AdminUsersPage from "./components/AdminUsersPage.jsx";
+import CoursesPage from "./components/CoursesPage.jsx";
 import AccountModal from "./components/AccountModal.jsx";
 import AuthPage from "./components/AuthPage.jsx";
 import { Loading } from "./components/shared.jsx";
@@ -106,6 +107,9 @@ export default function App() {
         <button className={`tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>
           历史记录
         </button>
+        <button className={`tab ${tab === "courses" ? "active" : ""}`} onClick={() => setTab("courses")}>
+          课程
+        </button>
         {user.role === "admin" && (
           <>
             <button className={`tab ${tab === "admin" ? "active" : ""}`} onClick={() => setTab("admin")}>
@@ -118,11 +122,14 @@ export default function App() {
         )}
       </nav>
 
-      {tab !== "users" && tab !== "admin" && <ProfileSelector profile={profile} onChange={setProfile} />}
+      {tab !== "users" && tab !== "admin" && tab !== "courses" && (
+        <ProfileSelector profile={profile} onChange={setProfile} />
+      )}
 
       {tab === "materials" && <MaterialsPage profile={profile} task={task} setTask={setTask} onUsed={refreshMe} />}
       {tab === "feedback" && <FeedbackPage profile={profile} task={task} setTask={setTask} onUsed={refreshMe} />}
       {tab === "history" && <HistoryPage scope="mine" />}
+      {tab === "courses" && <CoursesPage user={user} />}
       {tab === "admin" && user.role === "admin" && <HistoryPage scope="all" />}
       {tab === "users" && user.role === "admin" && <AdminUsersPage />}
 
