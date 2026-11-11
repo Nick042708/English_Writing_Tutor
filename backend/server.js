@@ -8,7 +8,7 @@ import { normalizeProfile } from "./profile.js";
 import { materialsPrompt, feedbackPrompt } from "./prompts.js";
 import { chatJSON, hasAPIKey } from "./llm.js";
 import { mockMaterials, mockFeedback } from "./mock.js";
-import { db, save, initDb, cloudDbEnabled, hash, newId, newToken } from "./db.js";
+import { db, save, initDb, cloudDbEnabled, dbStatus, hash, newId, newToken } from "./db.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -146,7 +146,16 @@ app.post("/api/profile", authRequired, (req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, aiEnabled: hasAPIKey(), demoMode: !hasAPIKey(), cloudDb: cloudDbEnabled });
+  res.json({
+    ok: true,
+    aiEnabled: hasAPIKey(),
+    demoMode: !hasAPIKey(),
+    cloudDb: cloudDbEnabled,
+    dbUsers: db.users.length,
+    dbLoadOk: dbStatus.cloudLoadOk,
+    dbLoadedAt: dbStatus.loadedAt,
+    dbLastError: dbStatus.lastError,
+  });
 });
 
 // ---------- 生成（需登录，自动存档） ----------
