@@ -55,7 +55,7 @@ git push -u origin main
 | Region | Singapore（离国内最近） |
 | Branch | `main` |
 | Root Directory | `backend` |
-| Build Command | `npm install && cd ../frontend && npm install && npm run build` |
+| Build Command | `npm install` |
 | Start Command | `npm start` |
 | Instance Type | **Free** |
 
@@ -84,3 +84,15 @@ git push -u origin main
 - **数据已云端化**：休眠重启不影响账号和历史记录（Upstash 保存）
 - **首次注册很重要**：管理员名额只有一个，部署后你自己先注册
 - 后续改代码：改完后告诉我，我提交并推送，Render 会自动重新部署
+
+## 前端构建产物的约定（重要）
+
+云端 **不构建前端**，直接托管仓库里的 `frontend/dist`（`render.yaml` 里 Build Command 只有 `npm install`）。
+原因：云端 Linux 与本地 Windows 的 rollup 原生模块互相不兼容（本地被系统策略拦截、云端缺 linux 原生包），
+改为本地构建、提交产物最稳。
+
+因此每次修改前端后需要：
+1. 本地构建：`cd frontend && npm run build`
+2. 把 `frontend/dist` 一起提交（该目录已不再被 .gitignore 忽略）
+3. 推送后 Render 自动部署
+

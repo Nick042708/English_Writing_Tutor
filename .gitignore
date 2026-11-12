@@ -2,7 +2,8 @@
 node_modules/
 
 # 构建产物
-frontend/dist/
+# 说明：frontend/dist 需要提交到仓库 —— 云端（Render）不构建前端，只托管这里提交的产物。
+# 每次改完前端，本地执行 npm run build 后把 dist 一起提交（详见 DEPLOY.md）。
 
 # 环境变量与密钥（切勿提交）
 .env

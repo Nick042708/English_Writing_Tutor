@@ -6,7 +6,9 @@ services:
     plan: free
     region: singapore
     rootDir: backend
-    buildCommand: npm install && cd ../frontend && npm install && npm run build
+    # 前端产物（frontend/dist）已提交到仓库，云端只装后端依赖并直接托管静态文件，
+    # 避免在云端安装/构建 vite+rollup（渲染环境与本地平台不同，原生模块易失败）。
+    buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
