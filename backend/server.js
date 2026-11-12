@@ -332,6 +332,13 @@ const numScore = (v) => {
   return m ? Number(m[0]) : null;
 };
 
+// 批改结果的 score 可能是对象 {label, comment}（真实 AI 与演示模式均如此），统一转成可展示的文本
+const scoreText = (v) => {
+  if (v == null) return null;
+  if (typeof v === "object") return v.label ?? v.comment ?? null;
+  return v;
+};
+
 const courseSummary = (c) => ({
   id: c.id,
   name: c.name,
@@ -356,7 +363,7 @@ const submissionSummary = (s, withUser = true) => ({
   wordCount: s.wordCount ?? null,
   status: s.status,
   submittedAt: s.submittedAt,
-  aiScore: s.aiResult?.score ?? null,
+  aiScore: scoreText(s.aiResult?.score),
   reviewScore: s.adminReview?.score ?? null,
   reviewComment: s.adminReview?.comment ?? null,
   reviewedAt: s.adminReview?.reviewedAt ?? null,
@@ -983,7 +990,7 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
         if (subs.length === 0) {
           items.push({ kind: "essay", refId: a.id, title: a.title, score: null, status: "unsubmitted" });
         } else {
-          const scores = subs.map((s) => numScore(s.adminReview?.score) ?? numScore(s.aiResult?.score));
+          const scores = subs.map((s) => numScore(scoreText(s.adminReview?.score)) ?? numScore(scoreText(s.aiResult?.score)));
           const best = Math.max(...scores.filter((v) => v != null));
           const latest = subs[subs.length - 1];
           items.push({
@@ -995,7 +1002,7 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
             wordCount: latest.wordCount ?? null,
             status: latest.status,
             reviewScore: latest.adminReview?.score ?? null,
-            aiScore: latest.aiResult?.score ?? null,
+            aiScore: scoreText(latest.aiResult?.score),
           });
         }
       }

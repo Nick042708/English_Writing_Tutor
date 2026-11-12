@@ -595,7 +595,7 @@ function ReviewSection({ assignments, submissions }) {
                           )}
                         </td>
                         <td>
-                          <button className="btn-ghost" onClick={() => setDetail(detail?.id === s.id ? null : s.id)}>
+                          <button className="btn-ghost" onClick={() => setDetail(detail === s.id ? null : s.id)}>
                             查看与复核
                           </button>
                         </td>
@@ -608,7 +608,7 @@ function ReviewSection({ assignments, submissions }) {
           </div>
         );
       })}
-      {detail && <SubmissionReview submissionId={detail.id} onClose={() => setDetail(null)} />}
+      {detail && <SubmissionReview submissionId={detail} onClose={() => setDetail(null)} />}
     </div>
   );
 }
@@ -657,8 +657,8 @@ function SubmissionReview({ submissionId, onClose }) {
         </div>
         <div className="account-summary">
           <div className="sum-row"><span>作文任务</span><b>{sub.task}</b></div>
-          <div className="sum-row"><span>AI 评分</span><b>{sub.aiResult?.score ?? "—"}</b></div>
-          <div className="sum-row"><span>复核状态</span><b>{sub.status === "reviewed" ? `已复核：${sub.adminReview?.score}` : "待复核"}</b></div>
+          <div className="sum-row"><span>AI 评分</span><b>{sub.aiResult?.score?.label ?? sub.aiResult?.score ?? "—"}</b></div>
+          <div className="sum-row"><span>复核状态</span><b>{sub.status === "reviewed" ? `已复核：${sub.adminReview?.score ?? sub.reviewScore}` : "待复核"}</b></div>
         </div>
         <div className="field-label">学生作文</div>
         <div className="essay-view">{sub.essay}</div>
