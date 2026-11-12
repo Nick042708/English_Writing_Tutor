@@ -15,7 +15,7 @@ const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 export const cloudDbEnabled = Boolean(REDIS_URL && REDIS_TOKEN);
 
 // 内存中的数据库对象（内存读写永远走这里，持久化由 save() 负责）
-export const db = { users: [], records: [], sessions: [], courses: [], submissions: [] };
+export const db = { users: [], records: [], sessions: [], courses: [], submissions: [], lessonGrades: [] };
 
 // 诊断信息：/api/health 会暴露，便于排查部署环境的数据加载问题
 export const dbStatus = {
@@ -47,6 +47,7 @@ function applyParsed(parsed) {
   db.sessions = parsed.sessions || [];
   db.courses = parsed.courses || [];
   db.submissions = parsed.submissions || [];
+  db.lessonGrades = parsed.lessonGrades || [];
 }
 
 // 启动时调用：从云端或本地文件加载已有数据

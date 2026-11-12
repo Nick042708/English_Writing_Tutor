@@ -4,6 +4,9 @@ import { Loading } from "./shared.jsx";
 import FeedbackResult from "./FeedbackResult.jsx";
 import { EXAMS, PRACTICAL } from "../examOptions.js";
 
+// 英文词数：按空白切分（与后端校验口径一致）
+const countWords = (text) => String(text || "").trim().split(/\s+/).filter(Boolean).length;
+
 // 写作批改页：自由练习 + 作业提交两种模式
 // 作业模式下任务/类型/难度由老师锁定，提交后不可重交，AI 批改结果同时进入老师复核队列
 export default function FeedbackPage({ profile, task, setTask, onUsed }) {
@@ -44,9 +47,21 @@ export default function FeedbackPage({ profile, task, setTask, onUsed }) {
   };
 
   const submit = async () => {
+    const wc = countWords(essay);
     if (essay.trim().length < 30) {
       setError("作文内容太短，请至少写 30 个字符");
       return;
+    }
+    // 作业词数要求（老师布置时设定）
+    if (asgMode && selected) {
+      if (selected.minWords && wc < selected.minWords) {
+        setError(`词数不足：当前 ${wc} 词，作业要求至少 ${selected.minWords} 词`);
+        return;
+      }
+      if (selected.maxWords && wc > selected.maxWords) {
+        setError(`词数超出：当前 ${wc} 词，作业要求不超过 ${selected.maxWords} 词`);
+        return;
+      }
     }
     setLoading(true);
     setError("");
@@ -79,6 +94,12 @@ export default function FeedbackPage({ profile, task, setTask, onUsed }) {
 
   const asgLabel = (a) =>
     `${a.courseName} · ${a.title}（${a.mode === "practical" ? PRACTICAL.find((p) => p.id === a.target)?.label || a.target : EXAMS.find((e) => e.id === a.target)?.label || a.target}）`;
+
+  const wc = countWords(essay);
+  const outOfRange =
+    asgMode && !!selected &&
+    ((selected.minWords && wc < selected.minWords) || (selected.maxWords && wc > selected.maxWords));
+  const wordColor = outOfRange ? "#b3372a" : "var(--ink-3)";
 
   return (
     <>
@@ -139,10 +160,14 @@ export default function FeedbackPage({ profile, task, setTask, onUsed }) {
           onChange={(e) => setEssay(e.target.value)}
           placeholder="在这里粘贴或输入你的完整作文……"
         />
-        <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>
-          当前字数：{essay.trim().length}
+        <div style={{ fontSize: 12, marginTop: 6, color: wordColor }}>
+          当前 {countWords(essay)} 词
+          {asgMode && selected && (selected.minWords || selected.maxWords)
+            ? `（作业要求 ${selected.minWords || "?"}—${selected.maxWords || "不限"} 词）`
+            : ""}
+          {asgMode && selected && (selected.minWords || selected.maxWords) && outOfRange ? " · 不满足要求，无法提交" : ""}
         </div>
-        <button className="btn" onClick={submit} disabled={loading}>
+        <button className="btn" onClick={submit} disabled={loading || (asgMode && !!selected && outOfRange)}>
           {loading ? (asgMode ? "正在批改并提交…" : "正在批改…") : asgMode ? "提交作业" : "提交批改"}
         </button>
         {result && !loading && result.demo && <span className="demo-tag">演示数据</span>}

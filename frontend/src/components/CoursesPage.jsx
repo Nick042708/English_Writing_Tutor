@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { get, post, del } from "../api.js";
 import { Loading } from "./shared.jsx";
 import FeedbackResult from "./FeedbackResult.jsx";
+import LessonsSection from "./Lessons.jsx";
+import GradesSection from "./Grades.jsx";
 import { EXAMS, PRACTICAL, CEFR_LEVELS, CHALLENGES } from "../examOptions.js";
 
 const fmt = (ts) =>
@@ -103,6 +105,7 @@ export default function CoursesPage({ user }) {
                 <div className="course-stats">
                   {user.role === "admin" && <span className="count-badge">{c.memberCount} 名学员</span>}
                   <span className="count-badge">{c.assignmentCount} 份作业</span>
+                  <span className="count-badge">{c.lessonCount} 篇阅读</span>
                   <span className="count-badge">{c.noticeCount} 条通知</span>
                 </div>
               </button>
@@ -131,7 +134,7 @@ function CourseDetail({ courseId, user, onBack }) {
   if (error) return <div className="error-box">{error} <button className="btn-ghost" onClick={onBack}>返回</button></div>;
   if (!data) return <Loading text="加载课程中…" />;
 
-  const { course, notices, assignments, members, submissions, mySubmissions } = data;
+  const { course, notices, assignments, lessons, members, submissions, mySubmissions, myLessonGrades } = data;
   const isAdmin = user.role === "admin";
 
   return (
@@ -153,8 +156,16 @@ function CourseDetail({ courseId, user, onBack }) {
         mySubmissions={mySubmissions}
         onChanged={load}
       />
+      <LessonsSection
+        course={course}
+        lessons={lessons || []}
+        isAdmin={isAdmin}
+        myLessonGrades={myLessonGrades}
+        onChanged={load}
+      />
       {isAdmin && <MembersSection course={course} members={members} onChanged={load} />}
       {isAdmin && <ReviewSection assignments={assignments} submissions={submissions} />}
+      {isAdmin && <GradesSection courseId={course.id} courseName={course.name} />}
     </>
   );
 }
@@ -224,14 +235,22 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
   const [target, setTarget] = useState("cet4");
   const [cefr, setCefr] = useState("B1");
   const [challenge, setChallenge] = useState("match");
+  const [minWords, setMinWords] = useState("");
+  const [maxWords, setMaxWords] = useState("");
   const [error, setError] = useState("");
 
   const publish = async () => {
     setError("");
     try {
-      await post(`/api/courses/${course.id}/assignments`, { title, task, mode, target, cefr, challenge });
+      await post(`/api/courses/${course.id}/assignments`, {
+        title, task, mode, target, cefr, challenge,
+        minWords: minWords || undefined,
+        maxWords: maxWords || undefined,
+      });
       setTitle("");
       setTask("");
+      setMinWords("");
+      setMaxWords("");
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -269,6 +288,14 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
               {CHALLENGES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
             </select>
           </div>
+          <div className="field-label">词数要求（可选，留空则不限制；学生提交时自动校验）</div>
+          <div className="row-actions" style={{ marginBottom: 8 }}>
+            <span style={{ fontSize: 13 }}>最少</span>
+            <input type="number" min="1" style={{ width: 90 }} value={minWords} onChange={(e) => setMinWords(e.target.value)} placeholder="如 100" />
+            <span style={{ fontSize: 13 }}>— 最多</span>
+            <input type="number" min="1" style={{ width: 90 }} value={maxWords} onChange={(e) => setMaxWords(e.target.value)} placeholder="如 150" />
+            <span style={{ fontSize: 13 }}>词</span>
+          </div>
           <button className="btn" onClick={publish}>发布作业</button>
         </>
       )}
@@ -284,6 +311,11 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
               <div className="notice-head">
                 <b>{a.title}</b>
                 <span className="count-badge">{targetLabel(a.mode, a.target)} · {a.challenge === "sprint" ? "冲刺" : a.challenge === "stretch" ? "拔高" : "匹配水平"}</span>
+                {(a.minWords || a.maxWords) && (
+                  <span className="count-badge">
+                    词数 {a.minWords || "?"}—{a.maxWords || "不限"}
+                  </span>
+                )}
                 {isAdmin ? (
                   <>
                     <span className="course-meta">已提交 {a.submissionCount} 份</span>
@@ -319,9 +351,10 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
   );
 }
 
-// ---------- 学员管理（管理员） ----------
+// ---------- 学员管理（管理员）：支持批量勾选导入 ----------
 function MembersSection({ course, members, onChanged }) {
   const [username, setUsername] = useState("");
+  const [batchOpen, setBatchOpen] = useState(false);
   const [error, setError] = useState("");
 
   const add = async () => {
@@ -343,14 +376,20 @@ function MembersSection({ course, members, onChanged }) {
           style={{ maxWidth: 240 }}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          placeholder="输入学员的用户名拉入课程"
+          placeholder="输入用户名添加单个学员"
           onKeyDown={(e) => e.key === "Enter" && add()}
         />
-        <button className="btn" onClick={add}>添加学员</button>
+        <button className="btn-ghost" onClick={add}>添加</button>
+        <button className="btn" onClick={() => setBatchOpen(!batchOpen)}>
+          {batchOpen ? "收起批量导入" : "批量选择学员导入"}
+        </button>
       </div>
       {error && <div className="error-box">{error}</div>}
+      {batchOpen && (
+        <BatchAdder course={course} onDone={() => { setBatchOpen(false); onChanged(); }} />
+      )}
       {!members || members.length === 0 ? (
-        <p className="empty-hint">还没有学员，用上方输入框按用户名添加。</p>
+        <p className="empty-hint">还没有学员。用上方按钮从账号列表中批量勾选导入。</p>
       ) : (
         <div className="table-wrap">
           <table className="user-table">
@@ -375,6 +414,104 @@ function MembersSection({ course, members, onChanged }) {
                       移出
                     </button>
                   </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 批量选择：列出全部学生账号（自动排除管理员与已在课程中的），勾选后一键导入
+function BatchAdder({ course, onDone }) {
+  const [users, setUsers] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [keyword, setKeyword] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const load = () =>
+    get("/api/admin/users")
+      .then((d) => setUsers(d.users.filter((u) => u.role !== "admin" && !course.members.includes(u.id))))
+      .catch((e) => setError(e.message));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filtered = (users || []).filter(
+    (u) =>
+      !keyword.trim() ||
+      u.username.includes(keyword.trim()) ||
+      (u.realName || "").includes(keyword.trim()) ||
+      (u.school || "").includes(keyword.trim())
+  );
+
+  const toggle = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const importSelected = async () => {
+    if (selected.size === 0) {
+      setError("请先勾选要导入的学员");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const d = await post(`/api/courses/${course.id}/members/batch`, { userIds: [...selected] });
+      setResult(d);
+      setSelected(new Set());
+      onDone();
+    } catch (e) {
+      setError(e.message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="notice-item">
+      <div className="row-actions" style={{ marginBottom: 8 }}>
+        <input
+          style={{ maxWidth: 220 }}
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="搜索姓名 / 用户名 / 学校"
+        />
+        <button className="btn-ghost" onClick={() => setSelected(new Set(filtered.map((u) => u.id)))}>
+          全选当前列表
+        </button>
+        <button className="btn-ghost" onClick={() => setSelected(new Set())}>清空勾选</button>
+        <button className="btn" onClick={importSelected} disabled={saving || !users}>
+          {saving ? "导入中…" : `导入所选（${selected.size} 人）`}
+        </button>
+      </div>
+      {error && <div className="error-box">{error}</div>}
+      {result && <div className="ok-box">导入完成：新增 {result.added} 人{result.skipped ? `，跳过 ${result.skipped} 人（已是成员或无效）` : ""}。</div>}
+      {!users ? (
+        <Loading text="加载账号列表…" />
+      ) : filtered.length === 0 ? (
+        <p className="empty-hint">没有可导入的账号——所有已注册学生都已在课程中。</p>
+      ) : (
+        <div className="table-wrap" style={{ maxHeight: 280, overflowY: "auto" }}>
+          <table className="user-table">
+            <thead>
+              <tr><th style={{ width: 36 }}></th><th>用户名</th><th>姓名</th><th>学校</th><th>类型</th></tr>
+            </thead>
+            <tbody>
+              {filtered.map((u) => (
+                <tr key={u.id} onClick={() => toggle(u.id)} style={{ cursor: "pointer" }}>
+                  <td><input type="checkbox" checked={selected.has(u.id)} onChange={() => toggle(u.id)} /></td>
+                  <td>{u.username}</td>
+                  <td>{u.realName || "未填写"}</td>
+                  <td>{u.school || "未填写"}</td>
+                  <td><span className={u.plan === "member" ? "plan-badge member" : "plan-badge guest"}>{u.plan === "member" ? "会员" : "游客"}</span></td>
                 </tr>
               ))}
             </tbody>

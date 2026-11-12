@@ -303,9 +303,21 @@ app.delete("/api/admin/users/:id", authRequired, adminRequired, (req, res) => {
 
 // ---------- 课程系统 ----------
 
-// 课程：{ id, name, startAt, endAt, teacherId, members[], notices[], assignments[], createdAt }
-// 作业：{ id, title, task, mode, target, cefr, challenge, createdAt }（类型/难度由老师锁定）
-// 提交：{ id, courseId, assignmentId, userId, essay, task, profile, aiResult, adminReview, status, submittedAt }
+// 课程：{ id, name, startAt, endAt, teacherId, members[], notices[], assignments[], lessons[], createdAt }
+// 作业：{ id, title, task, mode, target, cefr, challenge, minWords, maxWords, createdAt }（类型/难度/词数要求由老师锁定）
+// 提交：{ id, courseId, assignmentId, userId, essay, wordCount, task, profile, aiResult, adminReview, status, submittedAt }
+// 阅读：{ id, title, content, exercises[{id,type,prompt,options,answer,answers,mode,minWords,maxWords,points}], createdAt }
+// 练习成绩：{ id, courseId, lessonId, userId, answers[{exerciseId,answer,auto,correct}], autoScore, maxAutoScore,
+//            pendingReview, adminReview{scores,comment,reviewedAt}, totalScore, maxScore, submittedAt }
+
+// 英文作文词数：按空白切分（中英混排也按空格计）
+const countWords = (text) => String(text || "").trim().split(/\s+/).filter(Boolean).length;
+
+// 从自由文本评分里提取数字（如 "7 分" → 7），用于成绩统计
+const numScore = (v) => {
+  const m = String(v ?? "").match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : null;
+};
 
 const courseSummary = (c) => ({
   id: c.id,
@@ -316,6 +328,7 @@ const courseSummary = (c) => ({
   memberCount: c.members.length,
   noticeCount: c.notices.length,
   assignmentCount: c.assignments.length,
+  lessonCount: (c.lessons || []).length,
   createdAt: c.createdAt,
 });
 
@@ -378,6 +391,41 @@ app.get("/api/courses", authRequired, (req, res) => {
   res.json({ courses: list });
 });
 
+// 学生视角的课程内容（阅读练习不暴露标准答案）
+const lessonPublic = (l, withAnswers) => ({
+  id: l.id,
+  title: l.title,
+  content: l.content,
+  createdAt: l.createdAt,
+  exercises: (l.exercises || []).map((e) => ({
+    id: e.id,
+    type: e.type,
+    prompt: e.prompt,
+    options: e.type === "choice" ? e.options : undefined,
+    mode: e.type === "blank" ? e.mode : undefined,
+    minWords: e.minWords || null,
+    maxWords: e.maxWords || null,
+    points: e.points,
+    ...(withAnswers ? { answer: e.answer, answers: e.answers } : {}),
+  })),
+});
+
+const lessonGradeSummary = (g, withUser = true) => ({
+  id: g.id,
+  lessonId: g.lessonId,
+  userId: g.userId,
+  username: withUser ? db.users.find((u) => u.id === g.userId)?.username || "未知" : undefined,
+  realName: withUser ? db.users.find((u) => u.id === g.userId)?.realName || "" : undefined,
+  autoScore: g.autoScore,
+  maxAutoScore: g.maxAutoScore,
+  totalScore: g.totalScore,
+  maxScore: g.maxScore,
+  pendingReview: g.pendingReview,
+  adminComment: g.adminReview?.comment ?? null,
+  reviewedAt: g.adminReview?.reviewedAt ?? null,
+  submittedAt: g.submittedAt,
+});
+
 // 课程详情（成员或管理员）
 app.get("/api/courses/:id", authRequired, requireCourseMember, (req, res) => {
   const c = req.course;
@@ -390,6 +438,7 @@ app.get("/api/courses/:id", authRequired, requireCourseMember, (req, res) => {
     course: courseSummary(c),
     notices: c.notices.slice().sort((a, b) => b.createdAt - a.createdAt),
     assignments,
+    lessons: (c.lessons || []).slice().sort((a, b) => b.createdAt - a.createdAt).map((l) => lessonPublic(l, isAdmin)),
     members: isAdmin
       ? c.members.map((id) => userSummary(db.users.find((u) => u.id === id))).filter((u) => u.id)
       : undefined,
@@ -398,9 +447,36 @@ app.get("/api/courses/:id", authRequired, requireCourseMember, (req, res) => {
       : db.submissions
           .filter((s) => s.courseId === c.id && s.userId === req.user.id)
           .map((s) => submissionSummary(s, false)),
+    myLessonGrades: isAdmin
+      ? undefined
+      : db.lessonGrades.filter((g) => g.courseId === c.id && g.userId === req.user.id).map((g) => lessonGradeSummary(g, false)),
     submissions: isAdmin
       ? db.submissions.filter((s) => s.courseId === c.id).map((s) => submissionSummary(s))
       : undefined,
+    lessonGrades: isAdmin
+      ? db.lessonGrades.filter((g) => g.courseId === c.id).map((g) => lessonGradeSummary(g))
+      : undefined,
+  });
+});
+
+// 批量添加学员（按用户 id 列表，自动跳过管理员与已在课程中的账号）
+app.post("/api/courses/:id/members/batch", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const ids = Array.isArray(req.body.userIds) ? req.body.userIds : [];
+  if (ids.length === 0) return res.status(400).json({ error: "请至少选择一名学员" });
+  let added = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    const u = db.users.find((x) => x.id === id);
+    if (!u || u.role === "admin") { skipped++; continue; }
+    if (req.course.members.includes(u.id)) { skipped++; continue; }
+    req.course.members.push(u.id);
+    added++;
+  }
+  if (added > 0) save();
+  res.json({
+    added,
+    skipped,
+    members: req.course.members.map((mid) => userSummary(db.users.find((u) => u.id === mid))),
   });
 });
 
@@ -451,6 +527,11 @@ app.post("/api/courses/:id/assignments", authRequired, adminRequired, requireCou
   const task = String(req.body.task || "").trim();
   if (!title) return res.status(400).json({ error: "请填写作业标题" });
   if (!task) return res.status(400).json({ error: "请填写作文任务（题目/要求）" });
+  const minWords = Number(req.body.minWords);
+  const maxWords = Number(req.body.maxWords);
+  const minW = Number.isFinite(minWords) && minWords > 0 ? Math.round(minWords) : null;
+  const maxW = Number.isFinite(maxWords) && maxWords > 0 ? Math.round(maxWords) : null;
+  if (minW && maxW && maxW < minW) return res.status(400).json({ error: "最高词数不能小于最低词数" });
   const assignment = {
     id: newId(),
     title,
@@ -459,6 +540,8 @@ app.post("/api/courses/:id/assignments", authRequired, adminRequired, requireCou
     target: String(req.body.target || "cet4"),
     cefr: String(req.body.cefr || "B1"),
     challenge: String(req.body.challenge || "match"),
+    minWords: minW,
+    maxWords: maxW,
     createdAt: Date.now(),
   };
   req.course.assignments.push(assignment);
@@ -494,6 +577,8 @@ app.get("/api/assignments/available", authRequired, (req, res) => {
         target: a.target,
         cefr: a.cefr,
         challenge: a.challenge,
+        minWords: a.minWords || null,
+        maxWords: a.maxWords || null,
         submitted,
       });
     }
@@ -514,6 +599,13 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
   }
   const essay = (req.body.essay || "").trim();
   if (essay.length < 30) return res.status(400).json({ error: "作文内容太短，请至少写 30 个字符" });
+  const wordCount = countWords(essay);
+  if (assignment.minWords && wordCount < assignment.minWords) {
+    return res.status(400).json({ error: `词数不足：当前 ${wordCount} 词，要求至少 ${assignment.minWords} 词` });
+  }
+  if (assignment.maxWords && wordCount > assignment.maxWords) {
+    return res.status(400).json({ error: `词数超出：当前 ${wordCount} 词，要求不超过 ${assignment.maxWords} 词` });
+  }
 
   // 画像由老师布置作业时锁定，学生无法修改
   const profile = normalizeProfile({
@@ -532,6 +624,7 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
     assignmentId: assignment.id,
     userId: req.user.id,
     essay,
+    wordCount,
     task: assignment.task,
     profile: { target: profile.target, cefr: profile.cefr, challenge: profile.challenge },
     aiResult: data,
@@ -581,6 +674,279 @@ app.get("/api/my/submissions/:assignmentId", authRequired, (req, res) => {
   );
   if (!s) return res.status(404).json({ error: "尚未提交该作业" });
   res.json({ submission: { ...s } });
+});
+
+// ---------- 在线阅读与练习 ----------
+
+// 阅读文档 + 内嵌练习：选择题自动判分；填空题分「唯一答案」（自动判分）和「灵活」（老师人工批改）
+// 练习作答不调用 AI，不消耗每日额度
+
+const normAnswer = (s) =>
+  String(s || "")
+    .toLowerCase()
+    .replace(/[.,!?;:"'’“”。！？；：、]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+// 校验并规范化练习题，返回错误信息或 null
+function validateExercises(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return { error: "请至少添加一道练习题" };
+  const out = [];
+  for (const e of raw) {
+    const prompt = String(e.prompt || "").trim();
+    const points = Number(e.points);
+    if (!prompt) return { error: "练习题的题干不能为空" };
+    if (!Number.isFinite(points) || points <= 0 || points > 100) return { error: "每题分值需在 0-100 之间" };
+    if (e.type === "choice") {
+      const options = (Array.isArray(e.options) ? e.options : []).map((o) => String(o || "").trim()).filter(Boolean);
+      if (options.length < 2) return { error: "选择题至少需要 2 个选项" };
+      const answer = Number(e.answer);
+      if (!Number.isInteger(answer) || answer < 0 || answer >= options.length) {
+        return { error: "请为每道选择题指定正确选项" };
+      }
+      out.push({ type: "choice", prompt, options, answer, points: points });
+    } else if (e.type === "blank") {
+      const mode = e.mode === "unique" ? "unique" : "flexible";
+      const minWords = Number(e.minWords);
+      const maxWords = Number(e.maxWords);
+      const item = {
+        type: "blank",
+        prompt,
+        mode,
+        points: points,
+        minWords: Number.isFinite(minWords) && minWords > 0 ? Math.round(minWords) : null,
+        maxWords: Number.isFinite(maxWords) && maxWords > 0 ? Math.round(maxWords) : null,
+      };
+      if (item.minWords && item.maxWords && item.maxWords < item.minWords) {
+        return { error: "填空题的最高词数不能小于最低词数" };
+      }
+      if (mode === "unique") {
+        const answers = (Array.isArray(e.answers) ? e.answers : []).map((a) => String(a || "").trim()).filter(Boolean);
+        if (answers.length === 0) return { error: "唯一答案的填空题请至少填写一个可接受的答案" };
+        item.answers = answers;
+      }
+      out.push(item);
+    } else {
+      return { error: "练习题类型无效" };
+    }
+  }
+  return { exercises: out };
+}
+
+// 发布在线阅读（含练习）
+app.post("/api/courses/:id/lessons", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const title = String(req.body.title || "").trim();
+  const content = String(req.body.content || "").trim();
+  if (!title) return res.status(400).json({ error: "请填写阅读标题" });
+  if (!content) return res.status(400).json({ error: "请填写阅读正文" });
+  const v = validateExercises(req.body.exercises);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const lesson = {
+    id: newId(),
+    title,
+    content,
+    exercises: v.exercises.map((e) => ({ id: newId(), ...e })),
+    createdAt: Date.now(),
+  };
+  req.course.lessons = req.course.lessons || [];
+  req.course.lessons.push(lesson);
+  save();
+  res.json({ lesson: lessonPublic(lesson, true) });
+});
+
+app.delete("/api/courses/:id/lessons/:lessonId", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const lesson = (req.course.lessons || []).find((l) => l.id === req.params.lessonId);
+  if (!lesson) return res.status(404).json({ error: "阅读不存在" });
+  if (db.lessonGrades.some((g) => g.lessonId === lesson.id)) {
+    return res.status(400).json({ error: "已有学生作答，不能删除该阅读（成绩统计需要）" });
+  }
+  req.course.lessons = req.course.lessons.filter((l) => l.id !== lesson.id);
+  save();
+  res.json({ ok: true });
+});
+
+// 学生提交阅读练习：选择题与唯一答案填空自动判分，灵活填空等待老师批改（一次作答，不可重交）
+app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
+  const course = db.courses.find((c) => (c.lessons || []).some((l) => l.id === req.params.id));
+  const lesson = course?.lessons.find((l) => l.id === req.params.id);
+  if (!course || !lesson) return res.status(404).json({ error: "阅读不存在" });
+  if (req.user.role !== "admin" && !course.members.includes(req.user.id)) {
+    return res.status(403).json({ error: "你不在这门课程中，不能作答该阅读" });
+  }
+  if (db.lessonGrades.some((g) => g.lessonId === lesson.id && g.userId === req.user.id)) {
+    return res.status(400).json({ error: "该阅读已作答过，不能重复作答" });
+  }
+
+  const submitted = req.body.answers || {}; // { exerciseId: answer }
+  const answers = [];
+  let autoScore = 0;
+  let maxAutoScore = 0;
+  let pendingReview = false;
+
+  for (const e of lesson.exercises) {
+    const answer = String(submitted[e.id] ?? "").trim();
+    let auto = null;
+    let correct = null;
+    if (e.type === "choice") {
+      correct = Number(answer) === e.answer;
+      auto = correct ? e.points : 0;
+      autoScore += auto;
+      maxAutoScore += e.points;
+    } else if (e.mode === "unique") {
+      correct = e.answers.some((a) => normAnswer(a) === normAnswer(answer));
+      auto = correct ? e.points : 0;
+      autoScore += auto;
+      maxAutoScore += e.points;
+    } else {
+      // 灵活填空：老师人工批改
+      pendingReview = true;
+      if (e.minWords && countWords(answer) < e.minWords) {
+        return res.status(400).json({ error: `有填空题词数不足（要求至少 ${e.minWords} 词），请补充后再提交` });
+      }
+    }
+    answers.push({ exerciseId: e.id, answer, auto, correct });
+  }
+
+  const maxScore = lesson.exercises.reduce((sum, e) => sum + e.points, 0);
+  const grade = {
+    id: newId(),
+    courseId: course.id,
+    lessonId: lesson.id,
+    userId: req.user.id,
+    answers,
+    autoScore,
+    maxAutoScore,
+    pendingReview,
+    adminReview: null,
+    totalScore: autoScore,
+    maxScore,
+    submittedAt: Date.now(),
+  };
+  db.lessonGrades.push(grade);
+  save();
+  res.json({
+    grade: { ...grade, username: req.user.username },
+    lessonTitle: lesson.title,
+    courseName: course.name,
+  });
+});
+
+// 学生查看自己某份阅读的作答结果
+app.get("/api/my/lesson-grades/:lessonId", authRequired, (req, res) => {
+  const g = db.lessonGrades.find((x) => x.lessonId === req.params.lessonId && x.userId === req.user.id);
+  if (!g) return res.status(404).json({ error: "尚未作答该阅读" });
+  res.json({ grade: g });
+});
+
+// 老师查看某份阅读的全部作答（含学生答案与标准答案）
+app.get("/api/lessons/:id/grades", authRequired, adminRequired, (req, res) => {
+  const course = db.courses.find((c) => (c.lessons || []).some((l) => l.id === req.params.id));
+  const lesson = course?.lessons.find((l) => l.id === req.params.id);
+  if (!course || !lesson) return res.status(404).json({ error: "阅读不存在" });
+  const grades = db.lessonGrades
+    .filter((g) => g.lessonId === lesson.id)
+    .sort((a, b) => b.submittedAt - a.submittedAt)
+    .map((g) => ({
+      ...g,
+      username: db.users.find((u) => u.id === g.userId)?.username || "未知",
+      realName: db.users.find((u) => u.id === g.userId)?.realName || "",
+    }));
+  res.json({ lesson: lessonPublic(lesson, true), grades });
+});
+
+// 老师批改灵活填空（逐题给分）并写总评
+app.post("/api/lesson-grades/:id/review", authRequired, adminRequired, (req, res) => {
+  const g = db.lessonGrades.find((x) => x.id === req.params.id);
+  if (!g) return res.status(404).json({ error: "作答记录不存在" });
+  const lesson = db.courses.flatMap((c) => c.lessons || []).find((l) => l.id === g.lessonId);
+  if (!lesson) return res.status(404).json({ error: "阅读不存在" });
+
+  const scores = req.body.scores || {}; // { exerciseId: 得分 }
+  let flexibleTotal = 0;
+  for (const e of lesson.exercises) {
+    if (e.type === "blank" && e.mode === "flexible") {
+      const v = Number(scores[e.id]);
+      if (!Number.isFinite(v) || v < 0 || v > e.points) {
+        return res.status(400).json({ error: `请为所有灵活填空题打分（0-${e.points} 分）` });
+      }
+      flexibleTotal += v;
+    }
+  }
+  const comment = String(req.body.comment || "").trim();
+  g.adminReview = { scores, comment, reviewerId: req.user.id, reviewedAt: Date.now() };
+  g.totalScore = g.autoScore + flexibleTotal;
+  g.pendingReview = false;
+  save();
+  res.json({ grade: lessonGradeSummary(g) });
+});
+
+// ---------- 课程成绩统计 ----------
+
+// 汇总一门课的成绩：作业作文（复核分优先，AI 分兜底，取数字部分）+ 阅读练习（自动+人工合计）
+app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const c = req.course;
+  const rows = c.members
+    .map((uid) => {
+      const u = db.users.find((x) => x.id === uid);
+      if (!u) return null;
+      const items = [];
+      for (const a of c.assignments) {
+        const s = db.submissions.find((x) => x.assignmentId === a.id && x.userId === uid);
+        if (!s) {
+          items.push({ kind: "essay", refId: a.id, title: a.title, score: null, status: "unsubmitted" });
+        } else {
+          const score = numScore(s.adminReview?.score) ?? numScore(s.aiResult?.score);
+          items.push({
+            kind: "essay",
+            refId: a.id,
+            title: a.title,
+            score,
+            wordCount: s.wordCount ?? null,
+            status: s.status,
+            reviewScore: s.adminReview?.score ?? null,
+            aiScore: s.aiResult?.score ?? null,
+          });
+        }
+      }
+      for (const l of c.lessons || []) {
+        const g = db.lessonGrades.find((x) => x.lessonId === l.id && x.userId === uid);
+        if (!g) {
+          items.push({ kind: "lesson", refId: l.id, title: l.title, score: null, max: null, status: "unsubmitted" });
+        } else {
+          items.push({
+            kind: "lesson",
+            refId: l.id,
+            title: l.title,
+            score: g.pendingReview ? null : g.totalScore,
+            max: g.maxScore,
+            status: g.pendingReview ? "pending-review" : "graded",
+          });
+        }
+      }
+      const scored = items.filter((i) => i.score != null);
+      return {
+        userId: uid,
+        username: u.username,
+        realName: u.realName || "",
+        school: u.school || "",
+        items,
+        total: scored.reduce((sum, i) => sum + i.score, 0),
+        maxTotal: items.filter((i) => i.max != null).reduce((sum, i) => sum + i.max, 0),
+        doneCount: scored.length,
+        totalCount: items.length,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.total - a.total);
+
+  res.json({
+    course: courseSummary(c),
+    columns: [
+      ...c.assignments.map((a) => ({ kind: "essay", refId: a.id, title: a.title, max: a.maxWords })),
+      ...(c.lessons || []).map((l) => ({ kind: "lesson", refId: l.id, title: l.title })),
+    ],
+    rows,
+  });
 });
 
 // ---------- 页面托管 ----------

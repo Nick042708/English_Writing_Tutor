@@ -535,3 +535,8 @@ textarea.essay { min-height: 220px; font-family: Georgia, "Times New Roman", ser
   margin-bottom: 10px;
 }
 .review-modal { max-width: 640px; max-height: 86vh; overflow-y: auto; }
+
+/* ---------- 阅读与练习 ---------- */
+.lesson-content { font-size: 14px; }
+.lesson-editor { font-size: 14px; line-height: 1.7; }
+.grade-table th, .grade-table td { white-space: nowrap; }
