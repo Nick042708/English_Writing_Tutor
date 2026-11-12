@@ -64,10 +64,11 @@ const FEEDBACK_SCHEMA = `{
   "upgrades": [
     { "original": "原文原句", "improved": "升级后的英文句子", "note": "中文：一句话说明升级点" }
   ],
-  "actionPlan": ["中文：接下来 2-3 周的具体行动建议，3-4 条，要具体可执行"]
+  "actionPlan": ["中文：接下来 2-3 周的具体行动建议，3-4 条，要具体可执行"],
+  "progress": "中文：若是根据上次批改修改后的再次提交，用 2-3 句点评相比上一版的进步（哪些上次的问题已解决、哪些还没改好、本次新出现的问题）；首次提交时输出空字符串"
 }`;
 
-export function feedbackPrompt(profile, task, essay) {
+export function feedbackPrompt(profile, task, essay, prev = null) {
   const rubricLine = profile.examRubric
     ? `批改时参照：${profile.examRubric}。score 字段给出符合该标准的预估分数档。`
     : `非备考任务：按通用写作质量评估，score 字段用 达标/良好/优秀/待提升 等级。`;
@@ -75,11 +76,31 @@ export function feedbackPrompt(profile, task, essay) {
     ? "用户选择了「冲刺高分」：请按该考试最高档的严格标准评判，score 反映与最高档的真实差距，升级句直接示范最高档写法。"
     : "按用户画像档位的合理标准评判，升级句比原文高一档即可，不要过度拔高。";
 
+  // 修订模式：学生根据上一次批改修改后重新提交，需要对比评估进步
+  const revisionBlock = prev
+    ? `\n这是学生第 ${prev.attempt + 1} 次提交：他/她根据你上一次的批改对作文做了修改。上一版原文与批改意见如下。
+
+【上一版作文】
+${prev.essay}
+
+【上次批改要点】
+总评：${prev.feedback?.overall || "无"}
+维度点评：${(prev.feedback?.dimensions || []).map((d) => `${d.name}(${d.status})：${d.comment}`).join("；") || "无"}
+逐句批注建议：${(prev.feedback?.annotations || []).map((a) => `「${a.quote}」→ ${a.suggestion}`).join("；") || "无"}
+
+修订批改规则（在上面的通用规则之外额外遵守）：
+- 重点对比两版：上次指出的问题哪些已改正、哪些仍存在；本次是否引入了新问题
+- progress 字段必须填写：用 2-3 句明确点评本次的进步与差距，鼓励为主但不含糊
+- annotations 只针对当前版本的问题，不要重复表扬已改正的地方
+- score 按当前版本的实际水平评判，进步也要体现在分数档上`
+    : "";
+
   return {
     system: `  你是一位严格而友善的英语写作批改专家。${LEVEL_RULE(profile)}
 
 ${rubricLine}
 ${strictLine}
+${revisionBlock}
 
 批改规则：
 1. 先通读全文，理解学生想表达什么，不要想当然地替换学生的观点

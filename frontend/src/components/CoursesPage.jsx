@@ -237,6 +237,7 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
   const [challenge, setChallenge] = useState("match");
   const [minWords, setMinWords] = useState("");
   const [maxWords, setMaxWords] = useState("");
+  const [maxAttempts, setMaxAttempts] = useState(""); // 空 = 不限
   const [error, setError] = useState("");
 
   const publish = async () => {
@@ -246,11 +247,13 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
         title, task, mode, target, cefr, challenge,
         minWords: minWords || undefined,
         maxWords: maxWords || undefined,
+        maxAttempts: maxAttempts || undefined,
       });
       setTitle("");
       setTask("");
       setMinWords("");
       setMaxWords("");
+      setMaxAttempts("");
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -296,6 +299,17 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
             <input type="number" min="1" style={{ width: 90 }} value={maxWords} onChange={(e) => setMaxWords(e.target.value)} placeholder="如 150" />
             <span style={{ fontSize: 13 }}>词</span>
           </div>
+          <div className="field-label">提交次数（鼓励修改重交：AI 会参考上次批改点评进步；成绩取历次最高分）</div>
+          <div className="row-actions" style={{ marginBottom: 8 }}>
+            <select value={maxAttempts} onChange={(e) => setMaxAttempts(e.target.value)}>
+              <option value="">不限次数</option>
+              <option value="1">限 1 次</option>
+              <option value="2">限 2 次</option>
+              <option value="3">限 3 次</option>
+              <option value="4">限 4 次</option>
+              <option value="5">限 5 次</option>
+            </select>
+          </div>
           <button className="btn" onClick={publish}>发布作业</button>
         </>
       )}
@@ -305,7 +319,10 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
         <p className="empty-hint">暂无作业。</p>
       ) : (
         assignments.map((a) => {
-          const mine = mySubmissions?.find((s) => s.assignmentId === a.id);
+          const mineList = (mySubmissions || [])
+            .filter((s) => s.assignmentId === a.id)
+            .sort((x, y) => (y.attempt || 1) - (x.attempt || 1));
+          const mine = mineList[0];
           return (
             <div className="notice-item" key={a.id}>
               <div className="notice-head">
@@ -316,6 +333,9 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
                     词数 {a.minWords || "?"}—{a.maxWords || "不限"}
                   </span>
                 )}
+                <span className="count-badge">
+                  {a.maxAttempts ? `限 ${a.maxAttempts} 次提交` : "不限提交次数"}
+                </span>
                 {isAdmin ? (
                   <>
                     <span className="course-meta">已提交 {a.submissionCount} 份</span>
@@ -336,7 +356,8 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
                   </>
                 ) : mine ? (
                   <span className="plan-badge member">
-                    已提交{mine.status === "reviewed" ? ` · 老师复核：${mine.reviewScore}` : " · 待老师复核"}
+                    已提交 {mineList.length} 次{mine.status === "reviewed" ? ` · 老师复核：${mine.reviewScore}` : " · 待老师复核"}
+                    {(!a.maxAttempts || mineList.length < a.maxAttempts) && " · 还可修改重交"}
                   </span>
                 ) : (
                   <span className="plan-badge guest">未提交 · 请到「写作批改」页选择作业模式提交</span>
@@ -557,12 +578,13 @@ function ReviewSection({ assignments, submissions }) {
               <div className="table-wrap">
                 <table className="user-table">
                   <thead>
-                    <tr><th>学员</th><th>提交时间</th><th>AI 评分</th><th>复核状态</th><th>操作</th></tr>
+                    <tr><th>学员</th><th>次数</th><th>提交时间</th><th>AI 评分</th><th>复核状态</th><th>操作</th></tr>
                   </thead>
                   <tbody>
                     {subs.map((s) => (
                       <tr key={s.id}>
                         <td>{s.realName ? `${s.realName}（${s.username}）` : s.username}</td>
+                        <td><span className="count-badge">{s.attempt || 1}</span></td>
                         <td>{fmt(s.submittedAt)}</td>
                         <td>{s.aiScore ?? "—"}</td>
                         <td>

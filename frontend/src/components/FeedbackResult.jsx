@@ -24,6 +24,12 @@ export default function FeedbackResult({ result, profile, task, essay }) {
             <span className="score-note">{result.score.comment}</span>
           </div>
         )}
+        {result.progress && (
+          <div className="ok-box" style={{ marginTop: 12 }}>
+            <b>📈 与上一版相比：</b>
+            {result.progress}
+          </div>
+        )}
       </div>
 
       <div className="card">

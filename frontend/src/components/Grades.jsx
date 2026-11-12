@@ -52,7 +52,7 @@ export default function GradesSection({ courseId, courseName }) {
           <div className="row-actions" style={{ marginBottom: 8 }}>
             <button className="btn-ghost" onClick={exportCsv}>导出 CSV 成绩表</button>
             <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-              共 {data.rows.length} 名学员 · {data.columns.length} 项成绩 · 作文取老师复核分（无复核则取 AI 分）
+              共 {data.rows.length} 名学员 · {data.columns.length} 项成绩 · 作文取历次最高分（复核分优先），练习以最后一次作答为准
             </span>
           </div>
           <div className="table-wrap">
@@ -85,7 +85,10 @@ export default function GradesSection({ courseId, courseName }) {
                           ) : item?.status === "pending-review" ? (
                             <span className="plan-badge guest">待批改</span>
                           ) : item?.score != null ? (
-                            <b>{item.score}{item.max != null && `/${item.max}`}</b>
+                            <b>
+                              {item.score}{item.max != null && `/${item.max}`}
+                              {item.attempts > 1 && <span style={{ color: "var(--ink-3)", fontSize: 11 }}> ×{item.attempts}次</span>}
+                            </b>
                           ) : (
                             "—"
                           )}

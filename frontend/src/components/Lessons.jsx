@@ -6,14 +6,18 @@ const fmt = (ts) =>
   ts ? new Date(ts).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
 // ---------- 在线阅读与练习 ----------
-// 管理员：发布阅读文档 + 内嵌练习题（选择题 / 填空题：唯一答案自动判分，灵活写作题人工批改）
-// 学生：阅读学习 → 作答练习（一次锁定）→ 查看得分与正确性
+// 管理员：发布阅读文档 + 内嵌练习题（选择题 / 填空题：唯一答案自动判分，灵活写作题人工批改），可设作答次数
+// 学生：阅读学习 → 作答练习（次数内可重试，以最后一次为准）→ 查看得分；答对或次数用尽前不揭示标准答案
 export default function LessonsSection({ course, lessons, isAdmin, myLessonGrades, onChanged }) {
   const [creating, setCreating] = useState(false);
   const [answering, setAnswering] = useState(null); // 学生作答的阅读
   const [gradingLesson, setGradingLesson] = useState(null); // 老师批改的阅读
 
-  const myGrade = (lessonId) => myLessonGrades?.find((g) => g.lessonId === lessonId);
+  const myAttempts = (lessonId) =>
+    (myLessonGrades || [])
+      .filter((g) => g.lessonId === lessonId)
+      .sort((a, b) => (b.attempt || 1) - (a.attempt || 1));
+  const myGrade = (lessonId) => myAttempts(lessonId)[0];
 
   return (
     <div className="card">
@@ -33,13 +37,16 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
         </p>
       ) : (
         lessons.map((l) => {
-          const g = myGrade(l.id);
+          const attempts = myAttempts(l.id);
+          const g = attempts[0];
+          const canRetry = !l.maxAttempts || attempts.length < l.maxAttempts;
           return (
             <div className="notice-item" key={l.id}>
               <div className="notice-head">
                 <b>{l.title}</b>
                 <span className="count-badge">{l.exercises.length} 道练习</span>
                 <span className="count-badge">{l.exercises.reduce((s, e) => s + e.points, 0)} 分</span>
+                <span className="count-badge">{l.maxAttempts ? `限 ${l.maxAttempts} 次作答` : "不限作答次数"}</span>
                 {isAdmin ? (
                   <>
                     <button className="btn-ghost" onClick={() => setGradingLesson(l)}>查看作答与批改</button>
@@ -59,9 +66,13 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
                     </button>
                   </>
                 ) : g ? (
-                  <span className="plan-badge member">
-                    已作答 · {g.pendingReview ? `得分 ${g.autoScore}/${g.maxScore}，写作题待老师批改` : `得分 ${g.totalScore}/${g.maxScore}`}
-                  </span>
+                  <>
+                    <span className="plan-badge member">
+                      已作答 {attempts.length} 次 · {g.pendingReview ? `最新得分 ${g.autoScore}/${g.maxScore}，写作题待老师批改` : `最新得分 ${g.totalScore}/${g.maxScore}`}
+                      {canRetry && " · 可再试"}
+                    </span>
+                    {canRetry && <button className="btn-ghost" onClick={() => setAnswering(l)}>再次作答</button>}
+                  </>
                 ) : (
                   <button className="btn" onClick={() => setAnswering(l)}>开始作答</button>
                 )}
@@ -74,6 +85,7 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
       {answering && (
         <LessonAnswer
           lesson={answering}
+          attemptsUsed={myAttempts(answering.id).length}
           onClose={() => setAnswering(null)}
           onSubmitted={() => { setAnswering(null); onChanged(); }}
         />
@@ -99,6 +111,7 @@ function LessonEditor({ courseId, onDone }) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [exercises, setExercises] = useState([]);
+  const [maxAttempts, setMaxAttempts] = useState(""); // 空 = 不限
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -115,6 +128,7 @@ function LessonEditor({ courseId, onDone }) {
       await post(`/api/courses/${courseId}/lessons`, {
         title: title.trim(),
         content: content.trim(),
+        maxAttempts: maxAttempts || undefined,
         exercises: exercises.map((e) =>
           e.type === "choice"
             ? { type: "choice", prompt: e.prompt, options: e.options, answer: Number(e.answer), points: Number(e.points) }
@@ -148,6 +162,19 @@ function LessonEditor({ courseId, onDone }) {
       />
 
       <div className="field-label" style={{ marginTop: 14 }}>练习题（作答后即时反馈，计入课程成绩）</div>
+      <div className="row-actions" style={{ marginBottom: 8 }}>
+        <span style={{ fontSize: 13 }}>作答次数：</span>
+        <select value={maxAttempts} onChange={(e) => setMaxAttempts(e.target.value)}>
+          <option value="">不限次数</option>
+          <option value="1">限 1 次</option>
+          <option value="2">限 2 次</option>
+          <option value="3">限 3 次</option>
+          <option value="5">限 5 次</option>
+        </select>
+        <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+          以最后一次为准；有标准答案的题目在答对或次数用尽前不揭示答案，鼓励学生反复尝试
+        </span>
+      </div>
       {exercises.map((e, i) => (
         <div className="notice-item" key={i}>
           <div className="notice-head">
@@ -239,11 +266,11 @@ function LessonEditor({ courseId, onDone }) {
 }
 
 // ---------- 学生：作答 ----------
-function LessonAnswer({ lesson, onClose, onSubmitted }) {
+function LessonAnswer({ lesson, attemptsUsed = 0, onClose, onSubmitted }) {
   const [answers, setAnswers] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(null); // { grade, canRetry, revealAnswers, attemptsLeft, ... }
 
   const wc = (id) => String(answers[id] || "").trim().split(/\s+/).filter(Boolean).length;
 
@@ -252,15 +279,21 @@ function LessonAnswer({ lesson, onClose, onSubmitted }) {
     setSaving(true);
     try {
       const d = await post(`/api/lessons/${lesson.id}/submit`, { answers });
-      setResult(d.grade);
+      setResult(d);
     } catch (e) {
       setError(e.message);
       setSaving(false);
     }
   };
 
-  const exResult = (e) => result?.answers.find((a) => a.exerciseId === e.id);
-  const exById = (id) => lesson.exercises.find((x) => x.id === id);
+  const retry = () => {
+    setAnswers({});
+    setResult(null);
+    setError("");
+  };
+
+  const exResult = (e) => result?.grade?.answers.find((a) => a.exerciseId === e.id);
+  const reveal = result?.revealAnswers; // 次数用尽后才揭示标准答案
 
   return (
     <div className="modal-mask" onClick={onClose}>
@@ -277,7 +310,13 @@ function LessonAnswer({ lesson, onClose, onSubmitted }) {
         {result ? (
           <>
             <div className="ok-box">
-              作答已提交{result.pendingReview ? "：客观题已自动判分，写作题待老师批改。" : `，总分 ${result.totalScore}/${result.maxScore}。`}
+              第 {result.attempt}{result.maxAttempts ? `/${result.maxAttempts}` : ""} 次作答已提交
+              {result.grade.pendingReview
+                ? "：客观题已自动判分，写作题待老师批改。"
+                : `，本次得分 ${result.grade.totalScore}/${result.grade.maxScore}。`}
+              {result.canRetry
+                ? "客观题答错的题目可以先回头看看阅读材料，再试一次（标准答案会在次数用尽后揭示）。"
+                : "作答次数已用完，标准答案已在下方揭示，成绩以本次为准。"}
             </div>
             {lesson.exercises.map((e) => {
               const r = exResult(e);
@@ -287,7 +326,7 @@ function LessonAnswer({ lesson, onClose, onSubmitted }) {
                     <b>{e.type === "choice" ? "选择题" : "填空题"}</b>
                     {r.auto != null ? (
                       <span className={r.correct ? "plan-badge member" : "plan-badge guest"}>
-                        {r.correct ? `✓ 正确 +${e.points} 分` : "✗ 错误 +0 分"}
+                        {r.correct ? `✓ 正确 +${e.points} 分` : reveal ? "✗ 错误 +0 分" : "✗ 还不对，再试一下"}
                       </span>
                     ) : (
                       <span className="plan-badge guest">老师批改中</span>
@@ -296,20 +335,27 @@ function LessonAnswer({ lesson, onClose, onSubmitted }) {
                   <div className="notice-body" style={{ marginBottom: 6 }}>{e.prompt}</div>
                   {e.type === "choice" ? (
                     <div className="notice-body">
-                      你的选择：{e.options[Number(r?.answer)]}（正确答案：{e.options[e.answer]}）
+                      你的选择：{e.options[Number(r?.answer)]}
+                      {r.correct ? " ✓" : reveal ? `（正确答案：${e.options[e.answer]}）` : "（答案暂不揭示，再试一次）"}
                     </div>
                   ) : (
                     <>
                       <div className="essay-view">{r?.answer || "（未作答）"}</div>
-                      {e.mode === "unique" && !r?.correct && (
+                      {e.mode === "unique" && !r?.correct && reveal && (
                         <div className="notice-body" style={{ color: "var(--brand-ink)" }}>参考答案：{e.answers.join(" / ")}</div>
+                      )}
+                      {e.mode === "unique" && !r?.correct && !reveal && (
+                        <div className="notice-body" style={{ color: "var(--ink-3)" }}>答案暂不揭示——对照阅读材料再试试看</div>
                       )}
                     </>
                   )}
                 </div>
               );
             })}
-            <button className="btn" onClick={onSubmitted}>完成</button>
+            <div className="row-actions">
+              {result.canRetry && <button className="btn" onClick={retry}>再试一次{result.attemptsLeft != null ? `（还可 ${result.attemptsLeft} 次）` : ""}</button>}
+              <button className="btn-ghost" onClick={onSubmitted}>完成</button>
+            </div>
           </>
         ) : (
           <>
@@ -351,7 +397,12 @@ function LessonAnswer({ lesson, onClose, onSubmitted }) {
             {error && <div className="error-box">{error}</div>}
             <div className="row-actions">
               <button className="btn" onClick={submit} disabled={saving}>{saving ? "提交中…" : "提交作答"}</button>
-              <span style={{ fontSize: 12, color: "var(--ink-3)" }}>提交后不可修改；客观题自动判分，写作题由老师批改</span>
+              <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                {lesson.maxAttempts
+                  ? `本次为第 ${attemptsUsed + 1}/${lesson.maxAttempts} 次作答，以最后一次为准`
+                  : `本次为第 ${attemptsUsed + 1} 次作答（不限次数），以最后一次为准`}
+                ；答对或次数用尽前不揭示标准答案
+              </span>
             </div>
           </>
         )}
@@ -388,12 +439,13 @@ function LessonGrading({ lessonId, lessonTitle, onClose }) {
           <div className="table-wrap">
             <table className="user-table">
               <thead>
-                <tr><th>学员</th><th>提交时间</th><th>客观题</th><th>总分</th><th>状态</th><th>操作</th></tr>
+                <tr><th>学员</th><th>次数</th><th>提交时间</th><th>客观题</th><th>总分</th><th>状态</th><th>操作</th></tr>
               </thead>
               <tbody>
                 {data.grades.map((g) => (
                   <tr key={g.id}>
                     <td>{g.realName ? `${g.realName}（${g.username}）` : g.username}</td>
+                    <td><span className="count-badge">{g.attempt || 1}</span></td>
                     <td>{fmt(g.submittedAt)}</td>
                     <td>{g.autoScore}/{g.maxAutoScore}</td>
                     <td><b>{g.pendingReview ? "—" : `${g.totalScore}/${g.maxScore}`}</b></td>

@@ -69,9 +69,16 @@ function quotaRequired(req, res, next) {
       quotaExceeded: true,
     });
   }
+  next(); // 只做检查；额度在成功调用 AI 之后由 consumeQuota 计入（被拒的提交不消耗额度）
+}
+
+// 成功消耗一次额度（在 AI 生成完成后调用）
+function consumeQuota(u) {
+  if (membershipActive(u)) return;
+  const t = todayStr();
+  if (!u.usage || u.usage.date !== t) u.usage = { date: t, count: 0 };
   u.usage.count++;
   save();
-  next();
 }
 
 app.post("/api/register", (req, res) => {
@@ -171,7 +178,7 @@ async function generate({ prompt, mock, res }) {
   return { ...mock, demo: true, notice: "未配置 DEEPSEEK_API_KEY，当前为演示模式（预置示例数据）。在 backend/.env 中配置后即可体验真实 AI 生成。" };
 }
 
-function saveRecord(userId, type, body, profile, result) {
+function saveRecord(userId, type, body, profile, result, meta = {}) {
   const record = {
     id: newId(),
     userId,
@@ -180,6 +187,7 @@ function saveRecord(userId, type, body, profile, result) {
     task: body.task || "",
     essay: body.essay || "",
     result,
+    ...meta,
     createdAt: Date.now(),
   };
   db.records.push(record);
@@ -193,6 +201,7 @@ app.post("/api/materials", authRequired, quotaRequired, async (req, res) => {
   if (!task) return res.status(400).json({ error: "请填写写作任务" });
 
   const data = await generate({ prompt: materialsPrompt(profile, task), mock: mockMaterials(profile, task) });
+  consumeQuota(req.user);
   const recordId = saveRecord(req.user.id, "materials", { task }, profile, data);
   res.json({ ...data, recordId });
 });
@@ -206,6 +215,7 @@ app.post("/api/feedback", authRequired, quotaRequired, async (req, res) => {
   if (essay.length < 30) return res.status(400).json({ error: "作文内容太短，请至少写 30 个字符" });
 
   const data = await generate({ prompt: feedbackPrompt(profile, task, essay), mock: mockFeedback(profile, task, essay) });
+  consumeQuota(req.user);
   const recordId = saveRecord(req.user.id, "feedback", { task, essay }, profile, data);
   res.json({ ...data, recordId });
 });
@@ -218,6 +228,9 @@ const recordSummary = (r, withUser = false) => ({
   task: r.task,
   profile: r.profile,
   createdAt: r.createdAt,
+  ...(r.assignmentId
+    ? { assignmentId: r.assignmentId, attempt: r.attempt || 1, revisionOf: r.revisionOf || null }
+    : {}),
   ...(withUser ? { username: db.users.find((u) => u.id === r.userId)?.username || "未知" } : {}),
 });
 
@@ -338,6 +351,9 @@ const submissionSummary = (s, withUser = true) => ({
   userId: s.userId,
   username: withUser ? db.users.find((u) => u.id === s.userId)?.username || "未知" : undefined,
   realName: withUser ? db.users.find((u) => u.id === s.userId)?.realName || "" : undefined,
+  attempt: s.attempt || 1,
+  revisionOf: s.revisionOf || null,
+  wordCount: s.wordCount ?? null,
   status: s.status,
   submittedAt: s.submittedAt,
   aiScore: s.aiResult?.score ?? null,
@@ -397,6 +413,7 @@ const lessonPublic = (l, withAnswers) => ({
   title: l.title,
   content: l.content,
   createdAt: l.createdAt,
+  maxAttempts: l.maxAttempts || null,
   exercises: (l.exercises || []).map((e) => ({
     id: e.id,
     type: e.type,
@@ -416,6 +433,8 @@ const lessonGradeSummary = (g, withUser = true) => ({
   userId: g.userId,
   username: withUser ? db.users.find((u) => u.id === g.userId)?.username || "未知" : undefined,
   realName: withUser ? db.users.find((u) => u.id === g.userId)?.realName || "" : undefined,
+  attempt: g.attempt || 1,
+  revisionOf: g.revisionOf || null,
   autoScore: g.autoScore,
   maxAutoScore: g.maxAutoScore,
   totalScore: g.totalScore,
@@ -532,6 +551,8 @@ app.post("/api/courses/:id/assignments", authRequired, adminRequired, requireCou
   const minW = Number.isFinite(minWords) && minWords > 0 ? Math.round(minWords) : null;
   const maxW = Number.isFinite(maxWords) && maxWords > 0 ? Math.round(maxWords) : null;
   if (minW && maxW && maxW < minW) return res.status(400).json({ error: "最高词数不能小于最低词数" });
+  const maxAttemptsRaw = Number(req.body.maxAttempts);
+  const maxAttempts = Number.isInteger(maxAttemptsRaw) && maxAttemptsRaw > 0 ? maxAttemptsRaw : null; // null = 不限次数
   const assignment = {
     id: newId(),
     title,
@@ -542,6 +563,7 @@ app.post("/api/courses/:id/assignments", authRequired, adminRequired, requireCou
     challenge: String(req.body.challenge || "match"),
     minWords: minW,
     maxWords: maxW,
+    maxAttempts,
     createdAt: Date.now(),
   };
   req.course.assignments.push(assignment);
@@ -560,13 +582,16 @@ app.delete("/api/courses/:id/assignments/:assignmentId", authRequired, adminRequ
   res.json({ ok: true });
 });
 
-// 学生可提交的作业列表（跨课程，含提交状态）
+// 学生可提交的作业列表（跨课程，含提交状态与剩余次数）
 app.get("/api/assignments/available", authRequired, (req, res) => {
   const myCourses = db.courses.filter((c) => c.members.includes(req.user.id));
   const items = [];
   for (const c of myCourses) {
     for (const a of c.assignments) {
-      const submitted = db.submissions.some((s) => s.assignmentId === a.id && s.userId === req.user.id);
+      const mine = db.submissions
+        .filter((s) => s.assignmentId === a.id && s.userId === req.user.id)
+        .sort((x, y) => y.submittedAt - x.submittedAt);
+      const attempts = mine.length;
       items.push({
         assignmentId: a.id,
         courseId: c.id,
@@ -579,14 +604,19 @@ app.get("/api/assignments/available", authRequired, (req, res) => {
         challenge: a.challenge,
         minWords: a.minWords || null,
         maxWords: a.maxWords || null,
-        submitted,
+        maxAttempts: a.maxAttempts || null,
+        attempts,
+        attemptsLeft: a.maxAttempts ? Math.max(0, a.maxAttempts - attempts) : null,
+        canSubmit: !a.maxAttempts || attempts < a.maxAttempts,
+        submitted: attempts > 0,
+        latestSubmissionId: mine[0]?.id || null,
       });
     }
   }
   res.json({ assignments: items });
 });
 
-// 学生提交作业：一次锁定，AI 批改并进入老师复核队列
+// 学生提交作业：按老师设置的次数限制可多次提交（修改重交会参考上次的作文与批改）
 app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req, res) => {
   const course = db.courses.find((c) => c.assignments.some((a) => a.id === req.params.id));
   const assignment = course?.assignments.find((a) => a.id === req.params.id);
@@ -594,9 +624,17 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
   if (req.user.role !== "admin" && !course.members.includes(req.user.id)) {
     return res.status(403).json({ error: "你不在这门课程中，不能提交该作业" });
   }
-  if (db.submissions.some((s) => s.assignmentId === assignment.id && s.userId === req.user.id)) {
-    return res.status(400).json({ error: "该作业已提交过，不能重复提交。如需修改请联系老师。" });
+  const prevSubs = db.submissions
+    .filter((s) => s.assignmentId === assignment.id && s.userId === req.user.id)
+    .sort((a, b) => b.submittedAt - a.submittedAt);
+  if (assignment.maxAttempts && prevSubs.length >= assignment.maxAttempts) {
+    return res.status(400).json({
+      error: `已达到提交次数上限（${assignment.maxAttempts} 次）。如需再次修改，请联系老师调整次数。`,
+    });
   }
+  const attemptNo = prevSubs.length + 1;
+  // 修订链：默认基于最近一次提交；也可显式指定以哪一次为底稿
+  const prev = prevSubs.find((s) => s.id === req.body.resubmitOf) || prevSubs[0] || null;
   const essay = (req.body.essay || "").trim();
   if (essay.length < 30) return res.status(400).json({ error: "作文内容太短，请至少写 30 个字符" });
   const wordCount = countWords(essay);
@@ -615,9 +653,15 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
     challenge: assignment.challenge,
   });
   const data = await generate({
-    prompt: feedbackPrompt(profile, assignment.task, essay),
+    prompt: feedbackPrompt(
+      profile,
+      assignment.task,
+      essay,
+      prev ? { essay: prev.essay, feedback: prev.aiResult, attempt: prev.attempt || 1 } : null
+    ),
     mock: mockFeedback(profile, assignment.task, essay),
   });
+  consumeQuota(req.user);
   const submission = {
     id: newId(),
     courseId: course.id,
@@ -625,6 +669,8 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
     userId: req.user.id,
     essay,
     wordCount,
+    attempt: attemptNo,
+    revisionOf: prev?.id || null,
     task: assignment.task,
     profile: { target: profile.target, cefr: profile.cefr, challenge: profile.challenge },
     aiResult: data,
@@ -633,9 +679,23 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
     submittedAt: Date.now(),
   };
   db.submissions.push(submission);
-  const recordId = saveRecord(req.user.id, "feedback", { task: assignment.task, essay }, profile, data);
+  const recordId = saveRecord(req.user.id, "feedback", { task: assignment.task, essay }, profile, data, {
+    assignmentId: assignment.id,
+    courseId: course.id,
+    attempt: attemptNo,
+    revisionOf: prev?.id || null,
+  });
   save();
-  res.json({ ...data, recordId, submissionId: submission.id, courseName: course.name, assignmentTitle: assignment.title });
+  res.json({
+    ...data,
+    recordId,
+    submissionId: submission.id,
+    courseName: course.name,
+    assignmentTitle: assignment.title,
+    attempt: attemptNo,
+    maxAttempts: assignment.maxAttempts || null,
+    attemptsLeft: assignment.maxAttempts ? Math.max(0, assignment.maxAttempts - attemptNo) : null,
+  });
 });
 
 // 老师查看某作业的全部提交
@@ -667,13 +727,14 @@ app.post("/api/submissions/:id/review", authRequired, adminRequired, (req, res) 
   res.json({ submission: submissionSummary(s) });
 });
 
-// 学生查看自己的提交详情（含老师复核结果）
+// 学生查看自己的提交（全部尝试，新的在前）
 app.get("/api/my/submissions/:assignmentId", authRequired, (req, res) => {
-  const s = db.submissions.find(
-    (x) => x.assignmentId === req.params.assignmentId && x.userId === req.user.id
-  );
-  if (!s) return res.status(404).json({ error: "尚未提交该作业" });
-  res.json({ submission: { ...s } });
+  const subs = db.submissions
+    .filter((x) => x.assignmentId === req.params.assignmentId && x.userId === req.user.id)
+    .sort((a, b) => b.submittedAt - a.submittedAt);
+  if (subs.length === 0) return res.status(404).json({ error: "尚未提交该作业" });
+  const assignment = db.courses.flatMap((c) => c.assignments).find((a) => a.id === req.params.assignmentId);
+  res.json({ submissions: subs, maxAttempts: assignment?.maxAttempts || null });
 });
 
 // ---------- 在线阅读与练习 ----------
@@ -741,11 +802,14 @@ app.post("/api/courses/:id/lessons", authRequired, adminRequired, requireCourseM
   if (!content) return res.status(400).json({ error: "请填写阅读正文" });
   const v = validateExercises(req.body.exercises);
   if (v.error) return res.status(400).json({ error: v.error });
+  const maxAttemptsRaw = Number(req.body.maxAttempts);
+  const maxAttempts = Number.isInteger(maxAttemptsRaw) && maxAttemptsRaw > 0 ? maxAttemptsRaw : null; // null = 不限次数
   const lesson = {
     id: newId(),
     title,
     content,
     exercises: v.exercises.map((e) => ({ id: newId(), ...e })),
+    maxAttempts,
     createdAt: Date.now(),
   };
   req.course.lessons = req.course.lessons || [];
@@ -765,7 +829,8 @@ app.delete("/api/courses/:id/lessons/:lessonId", authRequired, adminRequired, re
   res.json({ ok: true });
 });
 
-// 学生提交阅读练习：选择题与唯一答案填空自动判分，灵活填空等待老师批改（一次作答，不可重交）
+// 学生提交阅读练习：选择题与唯一答案填空自动判分，灵活填空等待老师批改
+// 可多次作答（次数由老师设置），以最后一次为准；答对或次数用尽前不揭示标准答案
 app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
   const course = db.courses.find((c) => (c.lessons || []).some((l) => l.id === req.params.id));
   const lesson = course?.lessons.find((l) => l.id === req.params.id);
@@ -773,7 +838,15 @@ app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
   if (req.user.role !== "admin" && !course.members.includes(req.user.id)) {
     return res.status(403).json({ error: "你不在这门课程中，不能作答该阅读" });
   }
-  if (db.lessonGrades.some((g) => g.lessonId === lesson.id && g.userId === req.user.id)) {
+  const prevGrades = db.lessonGrades
+    .filter((g) => g.lessonId === lesson.id && g.userId === req.user.id)
+    .sort((a, b) => b.submittedAt - a.submittedAt);
+  if (lesson.maxAttempts && prevGrades.length >= lesson.maxAttempts) {
+    return res.status(400).json({ error: `已达到作答次数上限（${lesson.maxAttempts} 次）。` });
+  }
+  const attemptNo = prevGrades.length + 1;
+  const prev = prevGrades[0] || null;
+  if (db.lessonGrades.some((g) => g.lessonId === lesson.id && g.userId === req.user.id && g.attempt === attemptNo)) {
     return res.status(400).json({ error: "该阅读已作答过，不能重复作答" });
   }
 
@@ -813,6 +886,8 @@ app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
     courseId: course.id,
     lessonId: lesson.id,
     userId: req.user.id,
+    attempt: attemptNo,
+    revisionOf: prev?.id || null,
     answers,
     autoScore,
     maxAutoScore,
@@ -824,18 +899,28 @@ app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
   };
   db.lessonGrades.push(grade);
   save();
+  const canRetry = !lesson.maxAttempts || attemptNo < lesson.maxAttempts;
   res.json({
     grade: { ...grade, username: req.user.username },
     lessonTitle: lesson.title,
     courseName: course.name,
+    attempt: attemptNo,
+    maxAttempts: lesson.maxAttempts || null,
+    attemptsLeft: lesson.maxAttempts ? Math.max(0, lesson.maxAttempts - attemptNo) : null,
+    canRetry,
+    // 次数用尽后才揭示标准答案；还有机会时只告知对错，鼓励再试
+    revealAnswers: !canRetry,
   });
 });
 
-// 学生查看自己某份阅读的作答结果
+// 学生查看自己某份阅读的作答结果（返回全部尝试，新的在前；最多展示最近 5 次）
 app.get("/api/my/lesson-grades/:lessonId", authRequired, (req, res) => {
-  const g = db.lessonGrades.find((x) => x.lessonId === req.params.lessonId && x.userId === req.user.id);
-  if (!g) return res.status(404).json({ error: "尚未作答该阅读" });
-  res.json({ grade: g });
+  const grades = db.lessonGrades
+    .filter((x) => x.lessonId === req.params.lessonId && x.userId === req.user.id)
+    .sort((a, b) => b.submittedAt - a.submittedAt);
+  if (grades.length === 0) return res.status(404).json({ error: "尚未作答该阅读" });
+  const lesson = db.courses.flatMap((c) => c.lessons || []).find((l) => l.id === req.params.lessonId);
+  res.json({ grades, latest: grades[0], maxAttempts: lesson?.maxAttempts || null });
 });
 
 // 老师查看某份阅读的全部作答（含学生答案与标准答案）
@@ -891,25 +976,35 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
       if (!u) return null;
       const items = [];
       for (const a of c.assignments) {
-        const s = db.submissions.find((x) => x.assignmentId === a.id && x.userId === uid);
-        if (!s) {
+        // 多次提交取最高分（奖励努力修改的同学）
+        const subs = db.submissions
+          .filter((x) => x.assignmentId === a.id && x.userId === uid)
+          .sort((x, y) => x.submittedAt - y.submittedAt);
+        if (subs.length === 0) {
           items.push({ kind: "essay", refId: a.id, title: a.title, score: null, status: "unsubmitted" });
         } else {
-          const score = numScore(s.adminReview?.score) ?? numScore(s.aiResult?.score);
+          const scores = subs.map((s) => numScore(s.adminReview?.score) ?? numScore(s.aiResult?.score));
+          const best = Math.max(...scores.filter((v) => v != null));
+          const latest = subs[subs.length - 1];
           items.push({
             kind: "essay",
             refId: a.id,
             title: a.title,
-            score,
-            wordCount: s.wordCount ?? null,
-            status: s.status,
-            reviewScore: s.adminReview?.score ?? null,
-            aiScore: s.aiResult?.score ?? null,
+            score: Number.isFinite(best) ? best : null,
+            attempts: subs.length,
+            wordCount: latest.wordCount ?? null,
+            status: latest.status,
+            reviewScore: latest.adminReview?.score ?? null,
+            aiScore: latest.aiResult?.score ?? null,
           });
         }
       }
       for (const l of c.lessons || []) {
-        const g = db.lessonGrades.find((x) => x.lessonId === l.id && x.userId === uid);
+        // 练习以最后一次作答为准
+        const gs = db.lessonGrades
+          .filter((x) => x.lessonId === l.id && x.userId === uid)
+          .sort((x, y) => x.submittedAt - y.submittedAt);
+        const g = gs[gs.length - 1];
         if (!g) {
           items.push({ kind: "lesson", refId: l.id, title: l.title, score: null, max: null, status: "unsubmitted" });
         } else {
@@ -919,6 +1014,7 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
             title: l.title,
             score: g.pendingReview ? null : g.totalScore,
             max: g.maxScore,
+            attempts: gs.length,
             status: g.pendingReview ? "pending-review" : "graded",
           });
         }

@@ -65,6 +65,46 @@ export default function HistoryPage({ scope }) {
     );
   }
 
+  // 按修订链合并：同一份作业的多次批改合并为一组（其他记录独立展示）
+  const groups = React.useMemo(() => {
+    if (!records) return [];
+    const out = [];
+    const chainMap = new Map(); // assignmentId -> { chain records（按次数升序） }
+    for (const r of records) {
+      if (r.assignmentId) {
+        if (!chainMap.has(r.assignmentId)) {
+          chainMap.set(r.assignmentId, { key: `asg-${r.assignmentId}`, assignmentId: r.assignmentId, records: [] });
+          out.push(chainMap.get(r.assignmentId));
+        }
+        chainMap.get(r.assignmentId).records.push(r);
+      } else {
+        out.push({ key: r.id, record: r });
+      }
+    }
+    // 组内按次数升序（第 1 次在前）
+    for (const g of out) if (g.records) g.records.sort((a, b) => (a.attempt || 1) - (b.attempt || 1));
+    return out;
+  }, [records]);
+
+  const renderRow = (r) => (
+    <div className="rec-row" key={r.id}>
+      <span className={`rec-type ${r.type}`}>{r.type === "materials" ? "素材" : "批改"}</span>
+      <div className="rec-main">
+        <div className="rec-task">
+          {r.assignmentId && `（第 ${r.attempt || "?"} 次批改）`}{r.task}
+        </div>
+        <div className="rec-sub">
+          {scope === "all" && <>{r.username} · </>}
+          {fmtDate(r.createdAt)} · {r.profile?.target}
+          {r.profile?.challenge ? ` · ${r.profile.challenge === "match" ? "匹配" : r.profile.challenge === "stretch" ? "拔高" : "冲刺"}` : ""}
+        </div>
+      </div>
+      <button className="btn-ghost" onClick={() => openRecord(r.id)}>
+        查看
+      </button>
+    </div>
+  );
+
   return (
     <div className="card">
       <h2>
@@ -79,22 +119,18 @@ export default function HistoryPage({ scope }) {
         </span>
       )}
       {records &&
-        records.map((r) => (
-          <div className="rec-row" key={r.id}>
-            <span className={`rec-type ${r.type}`}>{r.type === "materials" ? "素材" : "批改"}</span>
-            <div className="rec-main">
-              <div className="rec-task">{r.task}</div>
-              <div className="rec-sub">
-                {scope === "all" && <>{r.username} · </>}
-                {fmtDate(r.createdAt)} · {r.profile?.target}
-                {r.profile?.challenge ? ` · ${r.profile.challenge === "match" ? "匹配" : r.profile.challenge === "stretch" ? "拔高" : "冲刺"}` : ""}
-              </div>
-            </div>
-            <button className="btn-ghost" onClick={() => openRecord(r.id)}>
-              查看
-            </button>
-          </div>
-        ))}
+        groups.map((g) =>
+          g.record ? (
+            renderRow(g.record)
+          ) : (
+            <details key={g.key} className="essay-collapse" style={{ borderBottom: "1px solid var(--line, #eee)" }}>
+              <summary>
+                📝 {g.records[0].task.slice(0, 24) || "课程作业"}… · {g.records.length} 次批改记录（点击展开）
+              </summary>
+              {g.records.map(renderRow)}
+            </details>
+          )
+        )}
       {loadingDetail && <Loading text="正在打开报告…" />}
     </div>
   );
