@@ -339,6 +339,55 @@ const scoreText = (v) => {
   return v;
 };
 
+// deadline：时间戳或 ISO/日期字符串 → 时间戳（无效则 null）
+const parseDeadline = (v) => {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+};
+const isOverdue = (d) => d != null && Date.now() > d;
+
+// 默认成绩分配：作业 40% / 在线学习 30% / 考试 30%（考试系统上线前自动按可用类别折算）
+const DEFAULT_WEIGHTS = { assignment: 40, lesson: 30, exam: 30 };
+
+// 讲解/练习穿插的块结构：[{type:"md", text} | {type:"exercise", exerciseId}]
+// 校验并规范化 blocks，返回 { blocks } 或 { error }
+function validateBlocks(raw, exercises) {
+  if (raw == null) return { blocks: null };
+  if (!Array.isArray(raw)) return { error: "内容块格式无效" };
+  const ids = new Set(exercises.map((e) => e.id));
+  const out = [];
+  let mdCount = 0;
+  for (const b of raw) {
+    if (b?.type === "md") {
+      const text = String(b.text || "").replace(/\s+$/g, "");
+      if (!text.trim()) return { error: "讲解内容不能为空块" };
+      out.push({ type: "md", text });
+      mdCount++;
+    } else if (b?.type === "exercise") {
+      const eid = String(b.exerciseId ?? b.index ?? "");
+      // 允许前端用「在 exercises 中的下标」引用，转换为真实 id
+      const ref = ids.has(eid) ? eid : exercises[Number(eid)]?.id;
+      if (!ref || !ids.has(ref)) return { error: "练习块引用的题目不存在" };
+      out.push({ type: "exercise", exerciseId: ref });
+    } else {
+      return { error: "内容块类型无效" };
+    }
+  }
+  if (out.length === 0) return { error: "请至少添加一个讲解或练习块" };
+  return { blocks: out, mdCount };
+}
+
+// 兼容旧数据：没有 blocks 的阅读按「全文讲解 + 全部练习」展开
+function blocksOf(l) {
+  if (Array.isArray(l.blocks) && l.blocks.length) return l.blocks;
+  return [
+    ...(l.content ? [{ type: "md", text: l.content }] : []),
+    ...(l.exercises || []).map((e) => ({ type: "exercise", exerciseId: e.id })),
+  ];
+}
+
 const courseSummary = (c) => ({
   id: c.id,
   name: c.name,
@@ -360,6 +409,7 @@ const submissionSummary = (s, withUser = true) => ({
   realName: withUser ? db.users.find((u) => u.id === s.userId)?.realName || "" : undefined,
   attempt: s.attempt || 1,
   revisionOf: s.revisionOf || null,
+  late: s.late || false,
   wordCount: s.wordCount ?? null,
   status: s.status,
   submittedAt: s.submittedAt,
@@ -419,6 +469,9 @@ const lessonPublic = (l, withAnswers) => ({
   id: l.id,
   title: l.title,
   content: l.content,
+  blocks: blocksOf(l),
+  deadline: l.deadline || null,
+  overdue: isOverdue(l.deadline),
   createdAt: l.createdAt,
   maxAttempts: l.maxAttempts || null,
   exercises: (l.exercises || []).map((e) => ({
@@ -442,6 +495,7 @@ const lessonGradeSummary = (g, withUser = true) => ({
   realName: withUser ? db.users.find((u) => u.id === g.userId)?.realName || "" : undefined,
   attempt: g.attempt || 1,
   revisionOf: g.revisionOf || null,
+  late: g.late || false,
   autoScore: g.autoScore,
   maxAutoScore: g.maxAutoScore,
   totalScore: g.totalScore,
@@ -462,6 +516,7 @@ app.get("/api/courses/:id", authRequired, requireCourseMember, (req, res) => {
   }));
   res.json({
     course: courseSummary(c),
+    syllabus: c.syllabus || null,
     notices: c.notices.slice().sort((a, b) => b.createdAt - a.createdAt),
     assignments,
     lessons: (c.lessons || []).slice().sort((a, b) => b.createdAt - a.createdAt).map((l) => lessonPublic(l, isAdmin)),
@@ -560,6 +615,7 @@ app.post("/api/courses/:id/assignments", authRequired, adminRequired, requireCou
   if (minW && maxW && maxW < minW) return res.status(400).json({ error: "最高词数不能小于最低词数" });
   const maxAttemptsRaw = Number(req.body.maxAttempts);
   const maxAttempts = Number.isInteger(maxAttemptsRaw) && maxAttemptsRaw > 0 ? maxAttemptsRaw : null; // null = 不限次数
+  const deadline = parseDeadline(req.body.deadline);
   const assignment = {
     id: newId(),
     title,
@@ -571,6 +627,7 @@ app.post("/api/courses/:id/assignments", authRequired, adminRequired, requireCou
     minWords: minW,
     maxWords: maxW,
     maxAttempts,
+    deadline,
     createdAt: Date.now(),
   };
   req.course.assignments.push(assignment);
@@ -587,6 +644,29 @@ app.delete("/api/courses/:id/assignments/:assignmentId", authRequired, adminRequ
   req.course.assignments = req.course.assignments.filter((x) => x.id !== a.id);
   save();
   res.json({ ok: true });
+});
+
+// 调整作业截止时间（null/空 = 取消截止）
+app.patch("/api/courses/:id/assignments/:assignmentId", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const a = req.course.assignments.find((x) => x.id === req.params.assignmentId);
+  if (!a) return res.status(404).json({ error: "作业不存在" });
+  a.deadline = req.body.deadline === undefined ? a.deadline : parseDeadline(req.body.deadline);
+  if (req.body.title != null) a.title = String(req.body.title).trim() || a.title;
+  save();
+  res.json({ assignment: a });
+});
+
+// 调整阅读截止时间与作答次数
+app.patch("/api/courses/:id/lessons/:lessonId", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const l = (req.course.lessons || []).find((x) => x.id === req.params.lessonId);
+  if (!l) return res.status(404).json({ error: "阅读不存在" });
+  l.deadline = req.body.deadline === undefined ? l.deadline : parseDeadline(req.body.deadline);
+  if (req.body.maxAttempts !== undefined) {
+    const n = Number(req.body.maxAttempts);
+    l.maxAttempts = Number.isInteger(n) && n > 0 ? n : null;
+  }
+  save();
+  res.json({ lesson: lessonPublic(l, true) });
 });
 
 // 学生可提交的作业列表（跨课程，含提交状态与剩余次数）
@@ -612,6 +692,8 @@ app.get("/api/assignments/available", authRequired, (req, res) => {
         minWords: a.minWords || null,
         maxWords: a.maxWords || null,
         maxAttempts: a.maxAttempts || null,
+        deadline: a.deadline || null,
+        overdue: isOverdue(a.deadline),
         attempts,
         attemptsLeft: a.maxAttempts ? Math.max(0, a.maxAttempts - attempts) : null,
         canSubmit: !a.maxAttempts || attempts < a.maxAttempts,
@@ -638,6 +720,11 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
     return res.status(400).json({
       error: `已达到提交次数上限（${assignment.maxAttempts} 次）。如需再次修改，请联系老师调整次数。`,
     });
+  }
+  // 截止时间：逾期默认拒绝；syllabus 开启「允许补交」时可补交（标记 late）
+  const late = isOverdue(assignment.deadline);
+  if (late && course.syllabus?.policies?.lateAssignment === false) {
+    return res.status(400).json({ error: "该作业已过截止时间，且本课程未开放补交。请联系老师。" });
   }
   const attemptNo = prevSubs.length + 1;
   // 修订链：默认基于最近一次提交；也可显式指定以哪一次为底稿
@@ -678,6 +765,7 @@ app.post("/api/assignments/:id/submit", authRequired, quotaRequired, async (req,
     wordCount,
     attempt: attemptNo,
     revisionOf: prev?.id || null,
+    late: late || undefined,
     task: assignment.task,
     profile: { target: profile.target, cefr: profile.cefr, challenge: profile.challenge },
     aiResult: data,
@@ -756,9 +844,11 @@ const normAnswer = (s) =>
     .replace(/\s+/g, " ")
     .trim();
 
-// 校验并规范化练习题，返回错误信息或 null
+// 校验并规范化练习题，返回错误信息或 null（允许 0 题：纯讲解的阅读不配练习）
 function validateExercises(raw) {
-  if (!Array.isArray(raw) || raw.length === 0) return { error: "请至少添加一道练习题" };
+  if (raw == null) return { exercises: [] };
+  if (!Array.isArray(raw)) return { error: "练习题格式无效" };
+  if (raw.length === 0) return { exercises: [] };
   const out = [];
   for (const e of raw) {
     const prompt = String(e.prompt || "").trim();
@@ -801,22 +891,30 @@ function validateExercises(raw) {
   return { exercises: out };
 }
 
-// 发布在线阅读（含练习）
+// 发布在线阅读（讲解/练习穿插的 blocks 结构 + 练习题 + 截止时间）
 app.post("/api/courses/:id/lessons", authRequired, adminRequired, requireCourseMember, (req, res) => {
   const title = String(req.body.title || "").trim();
   const content = String(req.body.content || "").trim();
   if (!title) return res.status(400).json({ error: "请填写阅读标题" });
-  if (!content) return res.status(400).json({ error: "请填写阅读正文" });
   const v = validateExercises(req.body.exercises);
   if (v.error) return res.status(400).json({ error: v.error });
+  // 先给练习题分配 id，再校验 blocks 的引用（编辑器按下标引用，也兼容直接传 id）
+  const exercises = v.exercises.map((e) => ({ id: newId(), ...e }));
+  const bv = validateBlocks(req.body.blocks, exercises);
+  if (bv.error) return res.status(400).json({ error: bv.error });
+  // 兼容旧编辑器：未传 blocks 时，正文即唯一讲解块
+  const blocks = bv.blocks || (content ? [{ type: "md", text: content }] : null);
+  if (!blocks) return res.status(400).json({ error: "请至少添加一段讲解或一道练习题" });
   const maxAttemptsRaw = Number(req.body.maxAttempts);
   const maxAttempts = Number.isInteger(maxAttemptsRaw) && maxAttemptsRaw > 0 ? maxAttemptsRaw : null; // null = 不限次数
   const lesson = {
     id: newId(),
     title,
-    content,
-    exercises: v.exercises.map((e) => ({ id: newId(), ...e })),
+    content: blocks.filter((b) => b.type === "md").map((b) => b.text).join("\n\n"),
+    blocks,
+    exercises,
     maxAttempts,
+    deadline: parseDeadline(req.body.deadline),
     createdAt: Date.now(),
   };
   req.course.lessons = req.course.lessons || [];
@@ -850,6 +948,11 @@ app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
     .sort((a, b) => b.submittedAt - a.submittedAt);
   if (lesson.maxAttempts && prevGrades.length >= lesson.maxAttempts) {
     return res.status(400).json({ error: `已达到作答次数上限（${lesson.maxAttempts} 次）。` });
+  }
+  // 截止时间：逾期默认拒绝；syllabus 开启「允许补学」时可补作（标记 late）
+  const late = isOverdue(lesson.deadline);
+  if (late && course.syllabus?.policies?.lateLesson === false) {
+    return res.status(400).json({ error: "该练习已过截止时间，且本课程未开放补学。请联系老师。" });
   }
   const attemptNo = prevGrades.length + 1;
   const prev = prevGrades[0] || null;
@@ -895,6 +998,7 @@ app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
     userId: req.user.id,
     attempt: attemptNo,
     revisionOf: prev?.id || null,
+    late: late || undefined,
     answers,
     autoScore,
     maxAutoScore,
@@ -972,6 +1076,74 @@ app.post("/api/lesson-grades/:id/review", authRequired, adminRequired, (req, res
   res.json({ grade: lessonGradeSummary(g) });
 });
 
+// ---------- Syllabus（教学大纲） ----------
+
+// syllabus 结构：{
+//   weights: { assignment, lesson, exam },   // 三类成绩占比（合计 100）
+//   essayFullMark: number,                   // 作文满分（用于折算百分比，如雅思 9 / 百分制 100）
+//   taskWeights: { [refId]: weight },        // 类别内每个任务/作业的权重（缺省为 1，即平均）
+//   policies: { lateAssignment, lateLesson },// 是否允许逾期补交/补学
+//   readings: [{ title, detail }],           // 参考阅读与参考用书
+//   description: string,                     // 课程说明
+//   updatedAt
+// }
+
+// 校验 syllabus，返回 { syllabus } 或 { error }
+function validateSyllabus(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const w = src.weights || {};
+  const weights = {
+    assignment: Number(w.assignment),
+    lesson: Number(w.lesson),
+    exam: Number(w.exam),
+  };
+  for (const k of Object.keys(weights)) {
+    if (!Number.isFinite(weights[k]) || weights[k] < 0 || weights[k] > 100) {
+      return { error: "成绩占比需为 0-100 的数字" };
+    }
+  }
+  const wSum = weights.assignment + weights.lesson + weights.exam;
+  if (Math.round(wSum) !== 100) return { error: `三类成绩占比之和需为 100%，当前为 ${Math.round(wSum * 10) / 10}%` };
+  const essayFullMark = Number(src.essayFullMark);
+  if (!Number.isFinite(essayFullMark) || essayFullMark <= 0) {
+    return { error: "作文满分需为正数（如百分制填 100，雅思填 9）" };
+  }
+  const taskWeights = {};
+  if (src.taskWeights && typeof src.taskWeights === "object") {
+    for (const [k, v] of Object.entries(src.taskWeights)) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return { error: "任务权重需为正数" };
+      taskWeights[k] = n;
+    }
+  }
+  const readings = (Array.isArray(src.readings) ? src.readings : [])
+    .map((r) => ({ title: String(r?.title || "").trim(), detail: String(r?.detail || "").trim() }))
+    .filter((r) => r.title);
+  return {
+    syllabus: {
+      weights,
+      essayFullMark,
+      taskWeights,
+      policies: {
+        lateAssignment: src.policies?.lateAssignment !== false,
+        lateLesson: src.policies?.lateLesson !== false,
+      },
+      readings,
+      description: String(src.description || "").trim(),
+      updatedAt: Date.now(),
+    },
+  };
+}
+
+// 保存（新建或修改）syllabus
+app.put("/api/courses/:id/syllabus", authRequired, adminRequired, requireCourseMember, (req, res) => {
+  const v = validateSyllabus(req.body.syllabus ?? req.body);
+  if (v.error) return res.status(400).json({ error: v.error });
+  req.course.syllabus = v.syllabus;
+  save();
+  res.json({ syllabus: req.course.syllabus });
+});
+
 // ---------- 课程成绩统计 ----------
 
 // 汇总一门课的成绩：作业作文（复核分优先，AI 分兜底，取数字部分）+ 阅读练习（自动+人工合计）
@@ -1000,6 +1172,7 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
             score: Number.isFinite(best) ? best : null,
             attempts: subs.length,
             wordCount: latest.wordCount ?? null,
+            late: latest.late || false,
             status: latest.status,
             reviewScore: latest.adminReview?.score ?? null,
             aiScore: scoreText(latest.aiResult?.score),
@@ -1022,17 +1195,53 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
             score: g.pendingReview ? null : g.totalScore,
             max: g.maxScore,
             attempts: gs.length,
+            late: g.late || false,
             status: g.pendingReview ? "pending-review" : "graded",
           });
         }
       }
       const scored = items.filter((i) => i.score != null);
+
+      // ---- 按 syllabus 计算加权总评 ----
+      // 类别内：每个任务按权重（缺省 1）加权平均其得分百分比；
+      // 作文百分比 = 分数 / 作文满分，练习百分比 = 得分 / 满分；未提交按 0 计。
+      // 考试类尚无成绩时，仅在已存在的类别间归一化。
+      const syl = c.syllabus || null;
+      const essayFull = syl?.essayFullMark > 0 ? Number(syl.essayFullMark) : 100;
+      const weights = { ...DEFAULT_WEIGHTS, ...(syl?.weights || {}) };
+      const tw = syl?.taskWeights || {};
+      const parts = [];
+      for (const kind of ["assignment", "lesson", "exam"]) {
+        const list = items.filter((i) => i.kind === (kind === "assignment" ? "essay" : kind));
+        if (list.length === 0) continue; // 该类别还没有任务，跳过
+        let sum = 0;
+        let wsum = 0;
+        for (const it of list) {
+          // 纯讲解（无练习题）的阅读没有分值，不拖低类别得分率
+          if (it.kind === "lesson" && it.max == null) continue;
+          const wRaw = Number(tw[it.refId]);
+          const weight = Number.isFinite(wRaw) && wRaw > 0 ? wRaw : 1;
+          const max = it.kind === "lesson" ? it.max : essayFull;
+          const pct = it.score != null && max > 0 ? Math.min(1, it.score / max) : 0;
+          sum += weight * pct;
+          wsum += weight;
+        }
+        const catScore = wsum > 0 ? (100 * sum) / wsum : 0;
+        parts.push({ kind, weight: weights[kind] ?? 0, score: Math.round(catScore * 10) / 10 });
+      }
+      const weightSum = parts.reduce((s, p) => s + p.weight, 0);
+      const weighted =
+        weightSum > 0
+          ? Math.round((parts.reduce((s, p) => s + (p.score * p.weight) / 100, 0) * 100) / weightSum * 10) / 10
+          : null;
+
       return {
         userId: uid,
         username: u.username,
         realName: u.realName || "",
         school: u.school || "",
         items,
+        weighted: weighted == null ? null : { total: weighted, parts },
         total: scored.reduce((sum, i) => sum + i.score, 0),
         maxTotal: items.filter((i) => i.max != null).reduce((sum, i) => sum + i.max, 0),
         doneCount: scored.length,
@@ -1040,10 +1249,12 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
       };
     })
     .filter(Boolean)
-    .sort((a, b) => b.total - a.total);
+    .sort((a, b) => (b.weighted?.total ?? b.total) - (a.weighted?.total ?? a.total));
 
   res.json({
     course: courseSummary(c),
+    syllabus: c.syllabus || null,
+    defaultWeights: DEFAULT_WEIGHTS,
     columns: [
       ...c.assignments.map((a) => ({ kind: "essay", refId: a.id, title: a.title, max: a.maxWords })),
       ...(c.lessons || []).map((l) => ({ kind: "lesson", refId: l.id, title: l.title })),

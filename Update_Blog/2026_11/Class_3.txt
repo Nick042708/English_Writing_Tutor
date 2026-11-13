@@ -1,0 +1,40 @@
+首先请你修复bug：学生无法打开复核的历史记录
+然后，本一轮我准备给课程添加以下功能：
+1.在线学习
+很多时候我会更想在讲解的内容中间穿插练习，就像这样：
+[讲解]
+- A paragraph has a topic sentence that states the main idea. The topic sentence is usually at the beginning of a paragraph. It helps the reader understand what the paragraph is about. 
+- All of the sentences in a paragraph are about one topic. All of the sentences are related to the topic sentence. There are no unrelated or extra sentences. 
+- A paragraph ends with a concluding sentence that brings the paragraph to a logical end. The concluding sentence usually states the main point again or summarizes the main idea. In addition, it can offer a suggestion, an opinion, or a prediction. It never includes new information. Often a key word or phrase from the topic sentence appears in the concluding sentence.
+[练习]
+Read the following sample paragraph written by a college freshman. Each sentence is labeled with a letter from [A] to [F]. Based on the rules of paragraph structure you have learned, complete the multiple-choice questions below.
+[A] Effective time management is crucial for a college freshman's success. [B] First, creating a weekly schedule helps students balance their academic studies and social activities. [C] In addition, avoiding procrastination ensures that assignments are completed on time and reduces stress. [D] The food in the campus cafeteria is sometimes very crowded and noisy. [E] Finally, setting aside specific hours for rest and exercise prevents students from getting exhausted. [F] In conclusion, mastering time management skills is highly beneficial for new students adjusting to university life.
+Multiple Choice Questions
+1. Which sentence is the topic sentence of this paragraph?
+A) [A]
+B) [B]
+C) [D]
+D) [F]
+2. Which sentence is unrelated to the main topic of this paragraph?
+A) [B]
+B) [C]
+C) [D]
+D) [E]
+3. Which sentence is the concluding sentence of this paragraph?
+A) [C]
+B) [D]
+C) [E]
+D) [F]
+[讲解]
+Topic Sentences
+Remember that the topic sentence presents the main idea for the entire paragraph. Always keep this main idea in mind when writing a paragraph.
+[练习]
+New York City
+First, many movies take place in New York City, so everyone knows the city even if they have never been there in person. Second, New York City has many famous tourist attractions, including the Statue of Liberty, the Empire State Building, Central Park, and Times Square. In addition, the city has some of the best shopping in the world. Finally, New York City is famous for its many theaters with world-class shows. For these reasons, everyone knows about this city.
+The topic sentence of the paragraph is missing. Please write a topic sentence for it.
+所以，你要帮我实现讲解和练习穿插的功能。
+另外，讲解和练习的长度可能不短，我希望你设计卡片式的功能，能够弹出卡片式的弹窗，一页一页翻下去，而且能保存进度。
+我希望能够在编辑在线学习发布的时候支持markdown语法。
+2.作业和在线学习需要能设置deadline
+3.需要设置考试系统（这个可以后面实现）
+4.需要管理员能够设置和管理syllabus，包括成绩的分配（在线学习/作业/考试的比例），然后能够再设置在线学习里每个任务的权重，每次作业在作业里的权重和每次考试在考试里的权重（这个不需要一开始就设定，一开始作业什么的可能还没布置好，而是最后才设置，前期可以用系统的默认的权限）。也包括一些最基本的规定（是否能补交和补学习、参考阅读和参考用书这样最基本的规定），另外syllubus需要能够修改

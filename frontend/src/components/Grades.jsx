@@ -41,6 +41,8 @@ export default function GradesSection({ courseId, courseName }) {
   if (!data) return <Loading text="统计成绩中…" />;
 
   const hasContent = data.columns.length > 0 && data.rows.length > 0;
+  const syl = data.syllabus;
+  const kindLabel = { assignment: "作业", lesson: "在线学习", exam: "考试" };
 
   return (
     <div className="card">
@@ -53,6 +55,7 @@ export default function GradesSection({ courseId, courseName }) {
             <button className="btn-ghost" onClick={exportCsv}>导出 CSV 成绩表</button>
             <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
               共 {data.rows.length} 名学员 · {data.columns.length} 项成绩 · 作文取历次最高分（复核分优先），练习以最后一次作答为准
+              {syl ? " · 加权总评按 Syllabus 计算" : " · 加权总评按默认比例（作业40/在线学习30）折算"}
             </span>
           </div>
           <div className="table-wrap">
@@ -66,11 +69,12 @@ export default function GradesSection({ courseId, courseName }) {
                       {c.title.length > 10 ? c.title.slice(0, 10) + "…" : c.title}
                     </th>
                   ))}
-                  <th>总分</th>
+                  <th>加权总评</th>
+                  <th>原始总分</th>
                 </tr>
               </thead>
               <tbody>
-                {data.rows.map((r, rank) => (
+                {data.rows.map((r) => (
                   <tr key={r.userId}>
                     <td>
                       <b>{r.realName || r.username}</b>
@@ -88,6 +92,7 @@ export default function GradesSection({ courseId, courseName }) {
                             <b>
                               {item.score}{item.max != null && `/${item.max}`}
                               {item.attempts > 1 && <span style={{ color: "var(--ink-3)", fontSize: 11 }}> ×{item.attempts}次</span>}
+                              {item.late && <span style={{ color: "#b3372a", fontSize: 11 }}> 补交</span>}
                             </b>
                           ) : (
                             "—"
@@ -95,12 +100,26 @@ export default function GradesSection({ courseId, courseName }) {
                         </td>
                       );
                     })}
-                    <td><b>{r.total}{r.maxTotal > 0 && `/${r.maxTotal}`}</b></td>
+                    <td>
+                      {r.weighted ? (
+                        <b title={r.weighted.parts.map((p) => `${kindLabel[p.kind]} ${p.score}分×${p.weight}%`).join("，")}>
+                          {r.weighted.total} 分
+                        </b>
+                      ) : (
+                        <span className="course-meta">—</span>
+                      )}
+                    </td>
+                    <td><span className="course-meta">{r.total}{r.maxTotal > 0 && `/${r.maxTotal}`}</span></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <p className="empty-hint" style={{ marginTop: 8 }}>
+            加权总评 = 各类别得分率按占比加权（未提交按 0 计）；考试未发布前自动在剩余类别间归一化。得分率口径：
+            {syl ? `作文按满分 ${syl.essayFullMark} 折算` : "作文按满分 100 折算"}
+            ，练习按题目满分折算。悬停「加权总评」可查看各类别明细。
+          </p>
         </>
       )}
     </div>

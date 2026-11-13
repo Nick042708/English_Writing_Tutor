@@ -118,9 +118,13 @@ export default function FeedbackPage({ profile, task, setTask, onUsed }) {
   const asgLabel = (a) =>
     `${a.courseName} · ${a.title}（${a.mode === "practical" ? PRACTICAL.find((p) => p.id === a.target)?.label || a.target : EXAMS.find((e) => e.id === a.target)?.label || a.target}）`;
 
-  // 作业下拉项标签：首次提交 / 修改重交
+  // 作业下拉项标签：首次提交 / 修改重交 / 截止时间
   const asgOptionLabel = (a) => {
-    const base = asgLabel(a);
+    let base = asgLabel(a);
+    if (a.deadline) {
+      const t = new Date(a.deadline).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      base += a.overdue ? ` · 已截止${t}(可补交)` : ` · 截止 ${t}`;
+    }
     if (a.attempts === 0) return base;
     const times = a.maxAttempts ? `第 ${a.attempts + 1}/${a.maxAttempts} 次` : `第 ${a.attempts + 1} 次 · 不限`;
     return `${base} · 修改重交（${times}）`;
@@ -199,6 +203,11 @@ export default function FeedbackPage({ profile, task, setTask, onUsed }) {
             : ""}
           {asgMode && selected && (selected.minWords || selected.maxWords) && outOfRange ? " · 不满足要求，无法提交" : ""}
         </div>
+        {asgMode && selected?.overdue && (
+          <div className="ok-box" style={{ marginTop: 6, fontSize: 12 }}>
+            该作业已过截止时间（课程允许补交）。本次提交会被标记为「补交」，是否扣分由老师复核决定。
+          </div>
+        )}
         <button className="btn" onClick={submit} disabled={loading || (asgMode && !!selected && outOfRange)}>
           {loading
             ? asgMode

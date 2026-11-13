@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { get, post, del } from "../api.js";
+import { get, post, del, patch } from "../api.js";
 import { Loading } from "./shared.jsx";
 import FeedbackResult from "./FeedbackResult.jsx";
-import LessonsSection from "./Lessons.jsx";
+import LessonsSection, { DeadlineEditor } from "./Lessons.jsx";
 import GradesSection from "./Grades.jsx";
+import SyllabusSection from "./SyllabusSection.jsx";
 import { EXAMS, PRACTICAL, CEFR_LEVELS, CHALLENGES } from "../examOptions.js";
 
 const fmt = (ts) =>
@@ -134,7 +135,7 @@ function CourseDetail({ courseId, user, onBack }) {
   if (error) return <div className="error-box">{error} <button className="btn-ghost" onClick={onBack}>返回</button></div>;
   if (!data) return <Loading text="加载课程中…" />;
 
-  const { course, notices, assignments, lessons, members, submissions, mySubmissions, myLessonGrades } = data;
+  const { course, syllabus, notices, assignments, lessons, members, submissions, mySubmissions, myLessonGrades } = data;
   const isAdmin = user.role === "admin";
 
   return (
@@ -148,6 +149,14 @@ function CourseDetail({ courseId, user, onBack }) {
         </div>
       </div>
 
+      <SyllabusSection
+        course={course}
+        syllabus={syllabus}
+        assignments={assignments}
+        lessons={lessons || []}
+        isAdmin={isAdmin}
+        onChanged={load}
+      />
       <NoticesSection course={course} notices={notices} isAdmin={isAdmin} onChanged={load} />
       <AssignmentsSection
         course={course}
@@ -238,7 +247,9 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
   const [minWords, setMinWords] = useState("");
   const [maxWords, setMaxWords] = useState("");
   const [maxAttempts, setMaxAttempts] = useState(""); // 空 = 不限
+  const [deadline, setDeadline] = useState("");
   const [error, setError] = useState("");
+  const [editingDeadline, setEditingDeadline] = useState(null);
 
   const publish = async () => {
     setError("");
@@ -248,12 +259,14 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
         minWords: minWords || undefined,
         maxWords: maxWords || undefined,
         maxAttempts: maxAttempts || undefined,
+        deadline: deadline ? new Date(deadline).getTime() : undefined,
       });
       setTitle("");
       setTask("");
       setMinWords("");
       setMaxWords("");
       setMaxAttempts("");
+      setDeadline("");
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -299,7 +312,7 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
             <input type="number" min="1" style={{ width: 90 }} value={maxWords} onChange={(e) => setMaxWords(e.target.value)} placeholder="如 150" />
             <span style={{ fontSize: 13 }}>词</span>
           </div>
-          <div className="field-label">提交次数（鼓励修改重交：AI 会参考上次批改点评进步；成绩取历次最高分）</div>
+          <div className="field-label">提交次数与截止时间（修改重交 AI 会参考上次批改点评进步；成绩取历次最高分）</div>
           <div className="row-actions" style={{ marginBottom: 8 }}>
             <select value={maxAttempts} onChange={(e) => setMaxAttempts(e.target.value)}>
               <option value="">不限次数</option>
@@ -309,7 +322,11 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
               <option value="4">限 4 次</option>
               <option value="5">限 5 次</option>
             </select>
+            <span style={{ fontSize: 13 }}>截止时间：</span>
+            <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} style={{ maxWidth: 220 }} />
+            <button className="btn-ghost" onClick={() => setDeadline("")}>清除</button>
           </div>
+          <span style={{ fontSize: 12, color: "var(--ink-3)" }}>逾期是否允许补交由教学大纲（Syllabus）中的规定控制。</span>
           <button className="btn" onClick={publish}>发布作业</button>
         </>
       )}
@@ -323,6 +340,7 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
             .filter((s) => s.assignmentId === a.id)
             .sort((x, y) => (y.attempt || 1) - (x.attempt || 1));
           const mine = mineList[0];
+          const overdue = a.deadline && Date.now() > a.deadline;
           return (
             <div className="notice-item" key={a.id}>
               <div className="notice-head">
@@ -336,9 +354,15 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
                 <span className="count-badge">
                   {a.maxAttempts ? `限 ${a.maxAttempts} 次提交` : "不限提交次数"}
                 </span>
+                {a.deadline && (
+                  <span className={overdue ? "count-badge deadline-passed" : "count-badge"}>
+                    {overdue ? "已截止" : `截止 ${fmt(a.deadline)}`}
+                  </span>
+                )}
                 {isAdmin ? (
                   <>
                     <span className="course-meta">已提交 {a.submissionCount} 份</span>
+                    <button className="btn-ghost" onClick={() => setEditingDeadline(a)}>改截止时间</button>
                     <button
                       className="btn-ghost danger"
                       onClick={async () => {
@@ -356,7 +380,7 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
                   </>
                 ) : mine ? (
                   <span className="plan-badge member">
-                    已提交 {mineList.length} 次{mine.status === "reviewed" ? ` · 老师复核：${mine.reviewScore}` : " · 待老师复核"}
+                    已提交 {mineList.length} 次{mine.late ? " · 补交" : ""}{mine.status === "reviewed" ? ` · 老师复核：${mine.reviewScore}` : " · 待老师复核"}
                     {(!a.maxAttempts || mineList.length < a.maxAttempts) && " · 还可修改重交"}
                   </span>
                 ) : (
@@ -367,6 +391,18 @@ function AssignmentsSection({ course, assignments, isAdmin, mySubmissions, onCha
             </div>
           );
         })
+      )}
+      {editingDeadline && (
+        <DeadlineEditor
+          title={`调整「${editingDeadline.title}」截止时间`}
+          initialDeadline={editingDeadline.deadline}
+          onSave={async (deadline) => {
+            await patch(`/api/courses/${course.id}/assignments/${editingDeadline.id}`, { deadline });
+            setEditingDeadline(null);
+            onChanged();
+          }}
+          onClose={() => setEditingDeadline(null)}
+        />
       )}
     </div>
   );
