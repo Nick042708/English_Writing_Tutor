@@ -656,7 +656,7 @@ app.patch("/api/courses/:id/assignments/:assignmentId", authRequired, adminRequi
   res.json({ assignment: a });
 });
 
-// 调整阅读截止时间与作答次数
+// 调整阅读：截止时间 / 作答次数 / 完整内容编辑（标题、blocks、练习题）
 app.patch("/api/courses/:id/lessons/:lessonId", authRequired, adminRequired, requireCourseMember, (req, res) => {
   const l = (req.course.lessons || []).find((x) => x.id === req.params.lessonId);
   if (!l) return res.status(404).json({ error: "阅读不存在" });
@@ -664,6 +664,22 @@ app.patch("/api/courses/:id/lessons/:lessonId", authRequired, adminRequired, req
   if (req.body.maxAttempts !== undefined) {
     const n = Number(req.body.maxAttempts);
     l.maxAttempts = Number.isInteger(n) && n > 0 ? n : null;
+  }
+  // 内容编辑：传了 title/blocks/exercises 任一即按整篇更新处理
+  if (req.body.title !== undefined || req.body.blocks !== undefined || req.body.exercises !== undefined) {
+    const title = String(req.body.title ?? l.title).trim();
+    if (!title) return res.status(400).json({ error: "请填写阅读标题" });
+    const v = validateExercises(req.body.exercises !== undefined ? req.body.exercises : l.exercises);
+    if (v.error) return res.status(400).json({ error: v.error });
+    // 编辑时尽量保留原练习题 id（按下标对应），这样学员历次作答记录仍能对上题干
+    v.exercises.forEach((e, i) => { e.id = l.exercises[i]?.id || newId(); });
+    const bv = validateBlocks(req.body.blocks !== undefined ? req.body.blocks : l.blocks, v.exercises);
+    if (bv.error) return res.status(400).json({ error: bv.error });
+    const blocks = bv.blocks || [{ type: "md", text: String(l.content || "") }];
+    l.title = title;
+    l.blocks = blocks;
+    l.exercises = v.exercises;
+    l.content = blocks.filter((b) => b.type === "md").map((b) => b.text).join("\n\n");
   }
   save();
   res.json({ lesson: lessonPublic(l, true) });

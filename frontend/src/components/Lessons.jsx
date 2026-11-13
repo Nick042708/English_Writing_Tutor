@@ -31,6 +31,7 @@ export const lessonDone = (lessonId) => !!loadProgress(lessonId).done;
 // 学生：卡片弹窗一页页翻阅，进度与草稿自动保存在本地；练习以最后一次为准
 export default function LessonsSection({ course, lessons, isAdmin, myLessonGrades, onChanged }) {
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(null); // 老师正在编辑的阅读
   const [studying, setStudying] = useState(null); // 学生正在学习的阅读
   const [gradingLesson, setGradingLesson] = useState(null); // 老师批改的阅读
   const [editingDeadline, setEditingDeadline] = useState(null);
@@ -47,19 +48,28 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
         讲解与练习穿插编排，学生以卡片形式逐页学习；支持 Markdown 排版，进度自动保存。
       </p>
       {isAdmin && (
-        <button className="btn" onClick={() => setCreating(!creating)}>
+        <button
+          className="btn"
+          onClick={() => {
+            setEditing(null);
+            setCreating(!creating);
+          }}
+        >
           {creating ? "收起编辑器" : "发布新学习内容"}
         </button>
       )}
-      {isAdmin && creating && (
+      {(isAdmin && creating) || editing ? (
         <LessonEditor
+          key={editing ? `edit-${editing.id}` : "new"}
           courseId={course.id}
+          initialLesson={editing}
           onDone={() => {
             setCreating(false);
+            setEditing(null);
             onChanged();
           }}
         />
-      )}
+      ) : null}
       {lessons.length === 0 ? (
         <p className="empty-hint">
           {isAdmin ? "还没有发布学习内容。用讲解 + 练习穿插的方式编排一节课吧。" : "老师还没有发布学习内容。"}
@@ -91,6 +101,15 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
                 {isAdmin ? (
                   <>
                     <button className="btn-ghost" onClick={() => setStudying(l)}>预览学习模式</button>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => {
+                        setCreating(false);
+                        setEditing(editing?.id === l.id ? null : l);
+                      }}
+                    >
+                      {editing?.id === l.id ? "收起编辑" : "编辑"}
+                    </button>
                     {l.exercises.length > 0 && (
                       <button className="btn-ghost" onClick={() => setGradingLesson(l)}>查看作答与批改</button>
                     )}
@@ -163,13 +182,16 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
 }
 
 // ---------- Deadline / 次数调整弹窗（在线学习与作业共用） ----------
+// 时间戳 → datetime-local 输入框的本地格式
+export function toLocalDatetime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function DeadlineEditor({ title, initialDeadline, initialMaxAttempts, withAttempts, onSave, onClose }) {
-  const toLocal = (ts) => {
-    if (!ts) return "";
-    const d = new Date(ts);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
+  const toLocal = toLocalDatetime;
   const [deadline, setDeadline] = useState(toLocal(initialDeadline));
   const [maxAttempts, setMaxAttempts] = useState(initialMaxAttempts || "");
   const [error, setError] = useState("");
@@ -219,15 +241,48 @@ export function DeadlineEditor({ title, initialDeadline, initialMaxAttempts, wit
   );
 }
 
-// ---------- 管理员：块编辑器（讲解 + 练习穿插） ----------
+// ---------- 管理员：块编辑器（讲解 + 练习穿插；initialLesson 传入时为编辑模式） ----------
 let blockKeySeq = 1;
 const nextKey = () => `bk-${Date.now()}-${blockKeySeq++}`;
 
-function LessonEditor({ courseId, onDone }) {
-  const [title, setTitle] = useState("");
-  const [blocks, setBlocks] = useState([]); // {key, type:'md', text} | {key, type:'exercise', data}
-  const [maxAttempts, setMaxAttempts] = useState(""); // 空 = 不限
-  const [deadline, setDeadline] = useState("");
+// 从已发布的阅读还原编辑器状态
+function stateFromLesson(l) {
+  const exById = new Map((l.exercises || []).map((e) => [e.id, e]));
+  const blocks = (l.blocks || (l.content ? [{ type: "md", text: l.content }] : [])).map((b) => {
+    if (b.type === "md") return { key: nextKey(), type: "md", text: b.text };
+    const e = exById.get(b.exerciseId);
+    if (!e) return null;
+    return {
+      key: nextKey(),
+      type: "exercise",
+      data:
+        e.type === "choice"
+          ? { type: "choice", prompt: e.prompt, options: [...e.options], answer: e.answer, points: e.points }
+          : {
+              type: "blank",
+              mode: e.mode,
+              prompt: e.prompt,
+              answersText: (e.answers || []).join("\n"),
+              minWords: e.minWords || "",
+              maxWords: e.maxWords || "",
+              points: e.points,
+            },
+    };
+  }).filter(Boolean);
+  return {
+    title: l.title || "",
+    blocks,
+    maxAttempts: l.maxAttempts ? String(l.maxAttempts) : "",
+    deadline: toLocalDatetime(l.deadline),
+  };
+}
+
+function LessonEditor({ courseId, initialLesson, onDone }) {
+  const init = useMemo(() => (initialLesson ? stateFromLesson(initialLesson) : null), [initialLesson]);
+  const [title, setTitle] = useState(init?.title || "");
+  const [blocks, setBlocks] = useState(init?.blocks || []); // {key, type:'md', text} | {key, type:'exercise', data}
+  const [maxAttempts, setMaxAttempts] = useState(init?.maxAttempts || ""); // 空 = 不限
+  const [deadline, setDeadline] = useState(init?.deadline || "");
   const [preview, setPreview] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -277,13 +332,18 @@ function LessonEditor({ courseId, onDone }) {
     }
     setSaving(true);
     try {
-      await post(`/api/courses/${courseId}/lessons`, {
+      const payload = {
         title: title.trim(),
         blocks: outBlocks,
         exercises,
         maxAttempts: maxAttempts || undefined,
         deadline: deadline ? new Date(deadline).getTime() : undefined,
-      });
+      };
+      if (initialLesson) {
+        await patch(`/api/courses/${courseId}/lessons/${initialLesson.id}`, payload);
+      } else {
+        await post(`/api/courses/${courseId}/lessons`, payload);
+      }
       onDone();
     } catch (err) {
       setError(err.message);
@@ -304,7 +364,7 @@ function LessonEditor({ courseId, onDone }) {
           ) : (
             <div className="notice-item" key={b.key}>
               <b>{b.data.type === "choice" ? "选择题" : "填空题"}</b>
-              <div className="notice-body" style={{ marginTop: 6 }}>{b.data.prompt}</div>
+              <div className="notice-body" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{b.data.prompt}</div>
             </div>
           )
         )}
@@ -370,7 +430,7 @@ function LessonEditor({ courseId, onDone }) {
 
       {error && <div className="error-box">{error}</div>}
       <button className="btn" style={{ marginTop: 10 }} onClick={publish} disabled={saving || !title.trim() || blocks.length === 0}>
-        {saving ? "发布中…" : "发布学习内容"}
+        {saving ? (initialLesson ? "保存中…" : "发布中…") : initialLesson ? "保存修改" : "发布学习内容"}
       </button>
     </div>
   );
@@ -381,7 +441,13 @@ function ExerciseFields({ data, patch }) {
   if (data.type === "choice") {
     return (
       <>
-        <input value={data.prompt} onChange={(e) => patch({ prompt: e.target.value })} placeholder="题干：例如 Which sentence is the topic sentence?" />
+        <textarea
+          className="lesson-editor"
+          style={{ minHeight: 56 }}
+          value={data.prompt}
+          onChange={(e) => patch({ prompt: e.target.value })}
+          placeholder={"题干（可换行）：例如\nRead the following sample paragraph...\nWhich sentence is the topic sentence?"}
+        />
         {data.options.map((o, oi) => (
           <div className="row-actions" key={oi} style={{ marginBottom: 6 }}>
             <label className="row-actions" style={{ gap: 4, cursor: "pointer" }}>
@@ -409,7 +475,13 @@ function ExerciseFields({ data, patch }) {
   }
   return (
     <>
-      <input value={data.prompt} onChange={(e) => patch({ prompt: e.target.value })} placeholder="题干" />
+      <textarea
+        className="lesson-editor"
+        style={{ minHeight: 56 }}
+        value={data.prompt}
+        onChange={(e) => patch({ prompt: e.target.value })}
+        placeholder={"题干（可换行）：例如粘贴一段短文后提问，或直接写出题目"}
+      />
       <div className="row-actions" style={{ marginBottom: 8 }}>
         <select value={data.mode} onChange={(e) => patch({ mode: e.target.value })}>
           <option value="unique">唯一答案（自动判分）</option>
