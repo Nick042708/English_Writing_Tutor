@@ -51,6 +51,15 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
           {creating ? "收起编辑器" : "发布新学习内容"}
         </button>
       )}
+      {isAdmin && creating && (
+        <LessonEditor
+          courseId={course.id}
+          onDone={() => {
+            setCreating(false);
+            onChanged();
+          }}
+        />
+      )}
       {lessons.length === 0 ? (
         <p className="empty-hint">
           {isAdmin ? "还没有发布学习内容。用讲解 + 练习穿插的方式编排一节课吧。" : "老师还没有发布学习内容。"}
