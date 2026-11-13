@@ -135,7 +135,7 @@ function CourseDetail({ courseId, user, onBack }) {
   if (error) return <div className="error-box">{error} <button className="btn-ghost" onClick={onBack}>返回</button></div>;
   if (!data) return <Loading text="加载课程中…" />;
 
-  const { course, syllabus, notices, assignments, lessons, members, submissions, mySubmissions, myLessonGrades } = data;
+  const { course, syllabus, notices, assignments, lessons, members, submissions, mySubmissions, myLessonGrades, myLessonAnswers } = data;
   const isAdmin = user.role === "admin";
 
   return (
@@ -170,6 +170,7 @@ function CourseDetail({ courseId, user, onBack }) {
         lessons={lessons || []}
         isAdmin={isAdmin}
         myLessonGrades={myLessonGrades}
+        myLessonAnswers={myLessonAnswers}
         onChanged={load}
       />
       {isAdmin && <MembersSection course={course} members={members} onChanged={load} />}

@@ -365,6 +365,11 @@ function validateBlocks(raw, exercises) {
       if (!text.trim()) return { error: "讲解内容不能为空块" };
       out.push({ type: "md", text });
       mdCount++;
+    } else if (b?.type === "material") {
+      // 共享材料块：短文/对话等，只贴一次，学生作答时同屏对照
+      const text = String(b.text || "").replace(/\s+$/g, "");
+      if (!text.trim()) return { error: "材料内容不能为空块" };
+      out.push({ type: "material", text });
     } else if (b?.type === "exercise") {
       const eid = String(b.exerciseId ?? b.index ?? "");
       // 允许前端用「在 exercises 中的下标」引用，转换为真实 id
@@ -531,6 +536,13 @@ app.get("/api/courses/:id", authRequired, requireCourseMember, (req, res) => {
     myLessonGrades: isAdmin
       ? undefined
       : db.lessonGrades.filter((g) => g.courseId === c.id && g.userId === req.user.id).map((g) => lessonGradeSummary(g, false)),
+    // 逐题作答记录（新模型）：学生看自己的，用于卡片恢复每题状态
+    myLessonAnswers: isAdmin
+      ? undefined
+      : db.lessonAnswers
+          .filter((a) => a.courseId === c.id && a.userId === req.user.id)
+          .sort((a, b) => a.submittedAt - b.submittedAt)
+          .map((a) => lessonAnswerSummary(a, (c.lessons || []).find((l) => l.id === a.lessonId))),
     submissions: isAdmin
       ? db.submissions.filter((s) => s.courseId === c.id).map((s) => submissionSummary(s))
       : undefined,
@@ -1040,6 +1052,172 @@ app.post("/api/lessons/:id/submit", authRequired, (req, res) => {
   });
 });
 
+// ---------- 逐题作答（新模型：每题单独计次数、单独判分） ----------
+
+// 逐题作答：POST /api/lessons/:id/answer { exerciseId, answer }
+// 规则与整卷模式一致：每题的作答次数受 lesson.maxAttempts 限制（null=不限）；
+// 答对、或该题次数用尽后才揭示标准答案；灵活写作题记为待老师批改
+app.post("/api/lessons/:id/answer", authRequired, (req, res) => {
+  const course = db.courses.find((c) => (c.lessons || []).some((l) => l.id === req.params.id));
+  const lesson = course?.lessons.find((l) => l.id === req.params.id);
+  if (!course || !lesson) return res.status(404).json({ error: "阅读不存在" });
+  if (req.user.role !== "admin" && !course.members.includes(req.user.id)) {
+    return res.status(403).json({ error: "你不在这门课程中，不能作答该阅读" });
+  }
+  const e = (lesson.exercises || []).find((x) => x.id === String(req.body.exerciseId || ""));
+  if (!e) return res.status(404).json({ error: "题目不存在（阅读可能刚被编辑过，请刷新页面）" });
+  // 截止时间：逾期默认拒绝；syllabus 开启「允许补学」时可补作（标记 late）
+  const late = isOverdue(lesson.deadline);
+  if (late && course.syllabus?.policies?.lateLesson === false) {
+    return res.status(400).json({ error: "该练习已过截止时间，且本课程未开放补学。请联系老师。" });
+  }
+  const answer = String(req.body.answer ?? "").trim();
+  if (!answer) return res.status(400).json({ error: "请先作答再提交" });
+
+  const prev = db.lessonAnswers
+    .filter((a) => a.lessonId === lesson.id && a.userId === req.user.id && a.exerciseId === e.id)
+    .sort((a, b) => a.submittedAt - b.submittedAt);
+  if (lesson.maxAttempts && prev.length >= lesson.maxAttempts) {
+    return res.status(400).json({ error: `本题已达到作答次数上限（${lesson.maxAttempts} 次）。` });
+  }
+  if (e.type === "blank" && e.mode === "flexible" && e.minWords && countWords(answer) < e.minWords) {
+    return res.status(400).json({ error: `词数不足（要求至少 ${e.minWords} 词），请补充后再提交` });
+  }
+  if (e.type === "choice" && !/^\d+$/.test(answer)) {
+    return res.status(400).json({ error: "请选择一个选项" });
+  }
+
+  const attemptNo = prev.length + 1;
+  let correct = null;
+  let auto = 0;
+  let pendingReview = false;
+  if (e.type === "choice") {
+    correct = Number(answer) === e.answer;
+    auto = correct ? e.points : 0;
+  } else if (e.mode === "unique") {
+    correct = e.answers.some((a) => normAnswer(a) === normAnswer(answer));
+    auto = correct ? e.points : 0;
+  } else {
+    pendingReview = true; // 灵活写作：老师批改
+  }
+  const record = {
+    id: newId(),
+    courseId: course.id,
+    lessonId: lesson.id,
+    userId: req.user.id,
+    exerciseId: e.id,
+    attempt: attemptNo,
+    answer,
+    auto,
+    correct,
+    pendingReview,
+    late: late || undefined,
+    adminReview: null,
+    submittedAt: Date.now(),
+  };
+  db.lessonAnswers.push(record);
+  save();
+
+  const exhausted = lesson.maxAttempts && attemptNo >= lesson.maxAttempts;
+  const reveal = !pendingReview && (correct || exhausted);
+  res.json({
+    attempt: attemptNo,
+    attemptsLeft: lesson.maxAttempts ? Math.max(0, lesson.maxAttempts - attemptNo) : null,
+    correct,
+    auto,
+    points: e.points,
+    pendingReview,
+    // 答对或该题次数用尽后揭示标准答案
+    revealAnswer: reveal ? (e.type === "choice" ? { kind: "choice", index: e.answer } : { kind: "answers", answers: e.answers }) : null,
+  });
+});
+
+// 逐题作答的汇总状态（学生端恢复界面用；不暴露标准答案，但答对/次数用尽的题返回揭示信息）
+const lessonAnswerSummary = (a, lesson) => {
+  const e = lesson?.exercises?.find((x) => x.id === a.exerciseId);
+  const reveal =
+    e &&
+    !a.pendingReview &&
+    (a.correct || (lesson.maxAttempts && a.attempt >= lesson.maxAttempts));
+  return {
+    id: a.id,
+    lessonId: a.lessonId,
+    exerciseId: a.exerciseId,
+    attempt: a.attempt,
+    answer: a.answer,
+    auto: a.auto,
+    correct: a.correct,
+    pendingReview: a.pendingReview,
+    adminScore: a.adminReview?.score ?? null,
+    late: a.late || false,
+    submittedAt: a.submittedAt,
+    revealAnswer: reveal
+      ? e.type === "choice"
+        ? { kind: "choice", index: e.answer }
+        : { kind: "answers", answers: e.answers }
+      : null,
+  };
+};
+
+// 老师批改逐题模式下的灵活写作（按学生 + 每题打分）
+app.post("/api/lessons/:id/review", authRequired, adminRequired, (req, res) => {
+  const course = db.courses.find((c) => (c.lessons || []).some((l) => l.id === req.params.id));
+  const lesson = course?.lessons.find((l) => l.id === req.params.id);
+  if (!course || !lesson) return res.status(404).json({ error: "阅读不存在" });
+  const userId = String(req.body.userId || "");
+  if (!course.members.includes(userId)) return res.status(404).json({ error: "该学生不在这门课程中" });
+  const scores = req.body.scores || {}; // { exerciseId: 得分 }
+  const comment = String(req.body.comment || "").trim();
+  let touched = 0;
+  for (const e of lesson.exercises || []) {
+    if (!(e.type === "blank" && e.mode === "flexible")) continue;
+    if (!(e.id in scores)) continue; // 允许只批改部分题（未打分的保持待批改）
+    const v = Number(scores[e.id]);
+    if (!Number.isFinite(v) || v < 0 || v > e.points) {
+      return res.status(400).json({ error: `「${e.prompt.slice(0, 12)}…」的得分需在 0-${e.points} 之间` });
+    }
+    const latest = db.lessonAnswers
+      .filter((a) => a.lessonId === lesson.id && a.userId === userId && a.exerciseId === e.id)
+      .sort((a, b) => a.submittedAt - b.submittedAt)
+      .pop();
+    if (latest) {
+      latest.adminReview = { score: v, comment, reviewerId: req.user.id, reviewedAt: Date.now() };
+      latest.pendingReview = false;
+      touched++;
+    }
+  }
+  if (!touched) return res.status(400).json({ error: "没有可批改的灵活写作题作答" });
+  save();
+  res.json({ ok: true, reviewed: touched });
+});
+
+// 老师查看某份阅读的逐题作答（新模型，按学生汇总）
+const lessonAnswersByUser = (lesson) => {
+  const rows = db.lessonAnswers
+    .filter((a) => a.lessonId === lesson.id)
+    .reduce((map, a) => {
+      (map[a.userId] = map[a.userId] || { userId: a.userId, byEx: {}, lastAt: 0 });
+      const cur = map[a.userId].byEx[a.exerciseId];
+      if (!cur || a.attempt > cur.attempt) map[a.userId].byEx[a.exerciseId] = a;
+      map[a.userId].lastAt = Math.max(map[a.userId].lastAt, a.submittedAt);
+      return map;
+    }, {});
+  return Object.values(rows)
+    .map((r) => {
+      const u = db.users.find((x) => x.id === r.userId);
+      return {
+        userId: r.userId,
+        username: u?.username || "未知",
+        realName: u?.realName || "",
+        lastAt: r.lastAt,
+        answers: Object.fromEntries(
+          Object.entries(r.byEx).map(([eid, a]) => [eid, lessonAnswerSummary(a)])
+        ),
+      };
+    })
+    .sort((a, b) => b.lastAt - a.lastAt);
+};
+
 // 学生查看自己某份阅读的作答结果（返回全部尝试，新的在前；最多展示最近 5 次）
 app.get("/api/my/lesson-grades/:lessonId", authRequired, (req, res) => {
   const grades = db.lessonGrades
@@ -1063,7 +1241,7 @@ app.get("/api/lessons/:id/grades", authRequired, adminRequired, (req, res) => {
       username: db.users.find((u) => u.id === g.userId)?.username || "未知",
       realName: db.users.find((u) => u.id === g.userId)?.realName || "",
     }));
-  res.json({ lesson: lessonPublic(lesson, true), grades });
+  res.json({ lesson: lessonPublic(lesson, true), grades, answersByUser: lessonAnswersByUser(lesson) });
 });
 
 // 老师批改灵活填空（逐题给分）并写总评
@@ -1196,7 +1374,42 @@ app.get("/api/courses/:id/grades", authRequired, adminRequired, requireCourseMem
         }
       }
       for (const l of c.lessons || []) {
-        // 练习以最后一次作答为准
+        // 逐题作答模型（优先）：每题取最后一次作答；灵活题取老师批改分
+        const perUser = db.lessonAnswers.filter((x) => x.lessonId === l.id && x.userId === uid);
+        const maxScore = (l.exercises || []).reduce((s, e) => s + e.points, 0);
+        if (perUser.length > 0 && maxScore > 0) {
+          let score = 0;
+          let pending = false;
+          let maxAttempt = 0;
+          let answered = 0;
+          for (const e of l.exercises || []) {
+            const list = perUser.filter((x) => x.exerciseId === e.id).sort((x, y) => x.submittedAt - y.submittedAt);
+            const last = list[list.length - 1];
+            if (!last) continue;
+            answered++;
+            maxAttempt = Math.max(maxAttempt, last.attempt);
+            if (last.pendingReview) {
+              pending = true;
+            } else {
+              score += last.adminReview ? Number(last.adminReview.score) || 0 : last.auto || 0;
+            }
+          }
+          items.push({
+            kind: "lesson",
+            refId: l.id,
+            title: l.title,
+            // 有待批改的灵活题时先不计入得分（与整卷模式口径一致）
+            score: pending ? null : score,
+            max: maxScore,
+            attempts: maxAttempt,
+            late: perUser.some((x) => x.late),
+            status: pending ? "pending-review" : "graded",
+            answered,
+            totalCount: (l.exercises || []).length,
+          });
+          continue;
+        }
+        // 兼容旧整卷作答：以最后一次为准
         const gs = db.lessonGrades
           .filter((x) => x.lessonId === l.id && x.userId === uid)
           .sort((x, y) => x.submittedAt - y.submittedAt);

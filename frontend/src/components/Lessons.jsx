@@ -29,7 +29,7 @@ export const lessonDone = (lessonId) => !!loadProgress(lessonId).done;
 // ---------- 在线学习（讲解/练习穿插 · 卡片式学习） ----------
 // 管理员：按「讲解(Markdown) / 练习题」块自由编排内容，可设作答次数与截止时间
 // 学生：卡片弹窗一页页翻阅，进度与草稿自动保存在本地；练习以最后一次为准
-export default function LessonsSection({ course, lessons, isAdmin, myLessonGrades, onChanged }) {
+export default function LessonsSection({ course, lessons, isAdmin, myLessonGrades, myLessonAnswers, onChanged }) {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null); // 老师正在编辑的阅读
   const [studying, setStudying] = useState(null); // 学生正在学习的阅读
@@ -40,6 +40,51 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
     (myLessonGrades || [])
       .filter((g) => g.lessonId === lessonId)
       .sort((a, b) => (b.attempt || 1) - (a.attempt || 1));
+  const myAnswerList = (lessonId) => (myLessonAnswers || []).filter((a) => a.lessonId === lessonId);
+
+  // 学生视角的单篇阅读徽章：优先逐题模型，兼容旧整卷作答
+  const studentBadge = (l) => {
+    const ans = myAnswerList(l.id);
+    if (ans.length > 0) {
+      const byEx = {};
+      for (const a of ans) {
+        if (!byEx[a.exerciseId] || a.attempt > byEx[a.exerciseId].attempt) byEx[a.exerciseId] = a;
+      }
+      let score = 0;
+      let pending = false;
+      for (const e of l.exercises) {
+        const s = byEx[e.id];
+        if (!s) continue;
+        if (s.pendingReview) {
+          if (s.adminScore != null) score += Number(s.adminScore) || 0;
+          else pending = true;
+        } else {
+          score += s.auto || 0;
+        }
+      }
+      const totalPts = l.exercises.reduce((s, e) => s + e.points, 0);
+      const answered = Object.keys(byEx).length;
+      const anyRetry = l.exercises.some((e) => {
+        const s = byEx[e.id];
+        return !s || (!s.pendingReview && !s.correct && (!l.maxAttempts || s.attempt < l.maxAttempts));
+      });
+      return (
+        <span className="plan-badge member">
+          已答 {answered}/{l.exercises.length} 题 · 得分 {score}/{totalPts}
+          {pending ? " · 含待批改" : ""}
+          {anyRetry ? " · 可继续作答" : ""}
+        </span>
+      );
+    }
+    const attempts = myAttempts(l.id);
+    const g = attempts[0];
+    if (!g) return null;
+    return (
+      <span className="plan-badge member">
+        已作答 {attempts.length} 次 · {g.pendingReview ? `最新得分 ${g.autoScore}/${g.maxScore}，写作题待老师批改` : `最新得分 ${g.totalScore}/${g.maxScore}`}
+      </span>
+    );
+  };
 
   return (
     <div className="card">
@@ -129,17 +174,12 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
                       删除
                     </button>
                   </>
-                ) : g ? (
-                  <>
-                    <span className="plan-badge member">
-                      已作答 {attempts.length} 次 · {g.pendingReview ? `最新得分 ${g.autoScore}/${g.maxScore}，写作题待老师批改` : `最新得分 ${g.totalScore}/${g.maxScore}`}
-                      {canRetry && " · 可再试"}
-                    </span>
-                  </>
-                ) : null}
-                {!isAdmin && (canRetry || !g) && (
+                ) : (
+                  studentBadge(l)
+                )}
+                {!isAdmin && (
                   <button className="btn" onClick={() => setStudying(l)}>
-                    {done || g ? "继续学习" : "开始学习"}
+                    {done || g || myAnswerList(l.id).length ? "继续学习" : "开始学习"}
                   </button>
                 )}
               </div>
@@ -150,7 +190,7 @@ export default function LessonsSection({ course, lessons, isAdmin, myLessonGrade
       {studying && (
         <LessonCard
           lesson={studying}
-          attemptsUsed={myAttempts(studying.id).length}
+          myAnswers={myAnswerList(studying.id)}
           isAdmin={isAdmin}
           onClose={() => setStudying(null)}
           onSubmitted={() => { setStudying(null); onChanged(); }}
@@ -250,6 +290,7 @@ function stateFromLesson(l) {
   const exById = new Map((l.exercises || []).map((e) => [e.id, e]));
   const blocks = (l.blocks || (l.content ? [{ type: "md", text: l.content }] : [])).map((b) => {
     if (b.type === "md") return { key: nextKey(), type: "md", text: b.text };
+    if (b.type === "material") return { key: nextKey(), type: "material", text: b.text };
     const e = exById.get(b.exerciseId);
     if (!e) return null;
     return {
@@ -288,6 +329,7 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
   const [saving, setSaving] = useState(false);
 
   const addMd = () => setBlocks([...blocks, { key: nextKey(), type: "md", text: "" }]);
+  const addMaterial = () => setBlocks([...blocks, { key: nextKey(), type: "material", text: "" }]);
   const addChoice = () =>
     setBlocks([...blocks, { key: nextKey(), type: "exercise", data: { type: "choice", prompt: "", options: ["", ""], answer: 0, points: 2 } }]);
   const addBlank = () =>
@@ -312,6 +354,8 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
     for (const b of blocks) {
       if (b.type === "md") {
         outBlocks.push({ type: "md", text: b.text });
+      } else if (b.type === "material") {
+        outBlocks.push({ type: "material", text: b.text });
       } else {
         const d = b.data;
         exercises.push(
@@ -359,12 +403,15 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
           <span style={{ fontSize: 12, color: "var(--ink-3)" }}>学生将看到的顺序（不含标准答案）</span>
         </div>
         {blocks.map((b) =>
-          b.type === "md" ? (
-            <div className="notice-item" key={b.key}><Markdown text={b.text} /></div>
-          ) : (
+          b.type === "exercise" ? (
             <div className="notice-item" key={b.key}>
               <b>{b.data.type === "choice" ? "选择题" : "填空题"}</b>
               <div className="notice-body" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{b.data.prompt}</div>
+            </div>
+          ) : (
+            <div className="notice-item" key={b.key}>
+              <b>{b.type === "material" ? "📄 共享材料（学生作答时同屏对照）" : "📖 讲解"}</b>
+              <div className="notice-body" style={{ marginTop: 6 }}><Markdown text={b.text} /></div>
             </div>
           )
         )}
@@ -383,7 +430,7 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
       {blocks.map((b, i) => (
         <div className="notice-item block-editor" key={b.key}>
           <div className="notice-head">
-            <b>{b.type === "md" ? "📖 讲解（Markdown）" : b.data.type === "choice" ? "✏️ 选择题" : b.data.mode === "unique" ? "✏️ 填空题（唯一答案）" : "✏️ 写作填空（老师批改）"}</b>
+            <b>{b.type === "md" ? "📖 讲解（Markdown）" : b.type === "material" ? "📄 共享材料" : b.data.type === "choice" ? "✏️ 选择题" : b.data.mode === "unique" ? "✏️ 填空题（唯一答案）" : "✏️ 写作填空（老师批改）"}</b>
             <span className="row-actions">
               <button className="btn-ghost" onClick={() => move(i, -1)} disabled={i === 0}>↑</button>
               <button className="btn-ghost" onClick={() => move(i, 1)} disabled={i === blocks.length - 1}>↓</button>
@@ -398,6 +445,14 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
               onChange={(e) => patchBlock(b.key, { text: e.target.value })}
               placeholder={"支持 Markdown：## 小标题、**加粗**、- 列表、> 引用、表格、代码块……\n写知识点讲解、范文示例、技巧总结……"}
             />
+          ) : b.type === "material" ? (
+            <textarea
+              className="lesson-editor"
+              style={{ minHeight: 120 }}
+              value={b.text}
+              onChange={(e) => patchBlock(b.key, { text: e.target.value })}
+              placeholder={"共享材料：粘贴短文 / 对话 / 图表描述……（保留换行，学生作答时可同屏对照，不用在每道题里重复粘贴）"}
+            />
           ) : (
             <ExerciseFields data={b.data} patch={(kv) => patchEx(b.key, kv)} />
           )}
@@ -406,6 +461,7 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
 
       <div className="row-actions" style={{ marginTop: 8 }}>
         <button className="btn-ghost" onClick={addMd}>+ 讲解块</button>
+        <button className="btn-ghost" onClick={addMaterial}>+ 材料块</button>
         <button className="btn-ghost" onClick={addChoice}>+ 选择题</button>
         <button className="btn-ghost" onClick={addBlank}>+ 填空题</button>
         <button className="btn-ghost" onClick={() => setPreview(true)} disabled={blocks.length === 0}>👁 预览</button>
@@ -515,105 +571,196 @@ function ExerciseFields({ data, patch }) {
   );
 }
 
-// ---------- 学生/预览：卡片式学习弹窗（分页 + 进度保存） ----------
-function LessonCard({ lesson, attemptsUsed = 0, isAdmin, onClose, onSubmitted }) {
+// ---------- 学生/预览：卡片式学习弹窗（分页 + 逐题提交 + 材料同屏 + 进度保存） ----------
+function LessonCard({ lesson, myAnswers = [], isAdmin, onClose, onSubmitted }) {
   const initial = useMemo(() => loadProgress(lesson.id), [lesson.id]);
   const [page, setPage] = useState(Math.min(initial.page || 0, lesson.blocks.length - 1));
-  const [answers, setAnswers] = useState(initial.answers || {});
-  const [result, setResult] = useState(null);
-  const [saving, setSaving] = useState(false);
+  const [drafts, setDrafts] = useState(initial.drafts || {}); // 每题未提交的草稿
+  const [matOpen, setMatOpen] = useState(initial.matOpen || false);
+  const [saved, setSaved] = useState(() => {
+    // 服务端已提交的每题最新记录
+    const map = {};
+    for (const a of myAnswers) {
+      const cur = map[a.exerciseId];
+      if (!cur || a.attempt > cur.attempt) map[a.exerciseId] = a;
+    }
+    return map;
+  });
+  const [feedback, setFeedback] = useState({}); // 刚提交一题的即时反馈 {exerciseId: resp}
+  const [savingId, setSavingId] = useState(null);
   const [error, setError] = useState("");
 
   const total = lesson.blocks.length;
   const isLast = page >= total - 1;
+  const materials = lesson.blocks.filter((b) => b.type === "material").map((b) => b.text);
 
   useEffect(() => {
-    if (!result) saveProgress(lesson.id, { page, answers, done: initial.done });
-  }, [page, answers]); // eslint-disable-line react-hooks/exhaustive-deps
+    saveProgress(lesson.id, { page, drafts, matOpen, done: initial.done });
+  }, [page, drafts, matOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 键盘翻页
   useEffect(() => {
     const onKey = (e) => {
-      if (result) return;
       if (e.key === "ArrowRight" && !isLast) setPage((p) => Math.min(p + 1, total - 1));
       if (e.key === "ArrowLeft" && page > 0) setPage((p) => p - 1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [page, isLast, total, result]);
+  }, [page, isLast, total]);
 
-  const wc = (id) => String(answers[id] || "").trim().split(/\s+/).filter(Boolean).length;
+  const wc = (id) => String(drafts[id] ?? saved[id]?.answer ?? "").trim().split(/\s+/).filter(Boolean).length;
   const exerciseOf = (b) => lesson.exercises.find((e) => e.id === b.exerciseId);
   const hasExercises = lesson.exercises.length > 0;
 
-  const submit = async () => {
-    setError("");
-    setSaving(true);
-    try {
-      const d = await post(`/api/lessons/${lesson.id}/submit`, { answers });
-      setResult(d);
-      saveProgress(lesson.id, { page: 0, answers: {}, done: true });
-    } catch (e) {
-      setError(e.message);
-      setSaving(false);
-    }
-  };
-
   const finishReadonly = () => {
-    saveProgress(lesson.id, { page: 0, answers: {}, done: true });
+    saveProgress(lesson.id, { page: 0, drafts: {}, matOpen: false, done: true });
     onSubmitted();
   };
 
-  const retry = () => {
-    setAnswers({});
-    setResult(null);
+  // 逐题提交：每题单独计次数，答对或次数用尽后揭示该题答案
+  const submitOne = async (e) => {
     setError("");
-    setPage(0);
+    const answer = String(drafts[e.id] ?? saved[e.id]?.answer ?? "").trim();
+    if (!answer) {
+      setError("请先作答再提交");
+      return;
+    }
+    setSavingId(e.id);
+    try {
+      const resp = await post(`/api/lessons/${lesson.id}/answer`, { exerciseId: e.id, answer });
+      setSaved((m) => ({
+        ...m,
+        [e.id]: { ...(m[e.id] || {}), answer, attempt: resp.attempt, correct: resp.correct, auto: resp.auto, pendingReview: resp.pendingReview, revealAnswer: resp.revealAnswer },
+      }));
+      setFeedback((f) => ({ ...f, [e.id]: resp }));
+      setDrafts((d) => ({ ...d, [e.id]: "" }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingId(null);
+    }
   };
 
-  const exResult = (e) => result?.grade?.answers.find((a) => a.exerciseId === e.id);
-  const reveal = result?.revealAnswers; // 次数用尽后才揭示标准答案
+  const exhaustedOf = (e) => lesson.maxAttempts && (saved[e.id]?.attempt || 0) >= lesson.maxAttempts;
+  const doneState = (e) => {
+    const s = saved[e.id];
+    if (!s) return null;
+    if (s.pendingReview) return s.adminScore != null ? "reviewed" : "pending";
+    return s.correct ? "correct" : exhaustedOf(e) ? "exhausted" : "wrong";
+  };
+  const attemptsLeftOf = (e) =>
+    lesson.maxAttempts ? Math.max(0, lesson.maxAttempts - (saved[e.id]?.attempt || 0)) : null;
+  const revealOf = (e) => saved[e.id]?.revealAnswer || feedback[e.id]?.revealAnswer || null;
 
-  const renderExerciseInput = (e) => (
-    <>
-      <div className="notice-head">
-        <b>{e.type === "choice" ? "选择题" : "填空题"}</b>
-        <span className="count-badge">{e.points} 分</span>
-        {e.type === "blank" && (
-          <span className="course-meta">
-            {e.mode === "unique" ? "有唯一答案" : "灵活写作 · 老师批改"}
-            {e.minWords ? ` · ${e.minWords}${e.maxWords ? `-${e.maxWords}` : "+"} 词` : ""}
-          </span>
+  const lessonScoreSummary = () => {
+    let score = 0;
+    let totalPts = 0;
+    let pending = false;
+    for (const e of lesson.exercises) {
+      totalPts += e.points;
+      const s = saved[e.id];
+      if (!s) continue;
+      if (s.pendingReview) {
+        if (s.adminScore != null) score += Number(s.adminScore) || 0;
+        else pending = true;
+      } else {
+        score += s.auto || 0;
+      }
+    }
+    return { score, total: totalPts, pending };
+  };
+
+  const renderExerciseInput = (e) => {
+    const st = doneState(e);
+    const left = attemptsLeftOf(e);
+    const rv = revealOf(e);
+    const locked = !isAdmin && (st === "correct" || st === "exhausted");
+    return (
+      <>
+        <div className="notice-head">
+          <b>{e.type === "choice" ? "选择题" : "填空题"}</b>
+          <span className="count-badge">{e.points} 分</span>
+          {e.type === "blank" && (
+            <span className="course-meta">
+              {e.mode === "unique" ? "有唯一答案" : "灵活写作 · 老师批改"}
+              {e.minWords ? ` · ${e.minWords}${e.maxWords ? `-${e.maxWords}` : "+"} 词` : ""}
+            </span>
+          )}
+          {!isAdmin && st === "correct" && <span className="plan-badge member">✓ 正确 +{e.points} 分</span>}
+          {!isAdmin && st === "exhausted" && <span className="plan-badge guest">✗ 次数用完 +0 分</span>}
+          {!isAdmin && st === "pending" && <span className="plan-badge guest">老师批改中</span>}
+          {!isAdmin && st === "reviewed" && <span className="plan-badge member">老师评分：{saved[e.id].adminScore}/{e.points}</span>}
+          {!isAdmin && st === "wrong" && (
+            <span className="plan-badge guest">✗ 还不对{left != null ? ` · 还可 ${left} 次` : " · 再试一次"}</span>
+          )}
+        </div>
+        <div className="notice-body" style={{ marginBottom: 8, whiteSpace: "pre-wrap" }}>{e.prompt}</div>
+        {locked ? (
+          e.type === "choice" ? (
+            <div className="notice-body">
+              你的选择：{e.options[Number(saved[e.id].answer)]}
+              {st === "exhausted" && !saved[e.id].correct ? `（正确答案：${e.options[e.answer]}）` : " ✓"}
+            </div>
+          ) : (
+            <>
+              <div className="essay-view">{saved[e.id].answer || "（未作答）"}</div>
+              {e.mode === "unique" && st === "exhausted" && (
+                <div className="notice-body" style={{ color: "var(--brand-ink)" }}>参考答案：{e.answers.join(" / ")}</div>
+              )}
+            </>
+          )
+        ) : (
+          <>
+            {e.type === "choice" ? (
+              e.options.map((o, oi) => (
+                <label className="row-actions" key={oi} style={{ gap: 8, cursor: "pointer", marginBottom: 6 }}>
+                  <input
+                    type="radio"
+                    name={`q-${e.id}`}
+                    checked={String(drafts[e.id] ?? saved[e.id]?.answer ?? "") === String(oi)}
+                    onChange={() => setDrafts({ ...drafts, [e.id]: String(oi) })}
+                  />
+                  {o}
+                </label>
+              ))
+            ) : (
+              <>
+                <textarea
+                  style={{ minHeight: 80 }}
+                  value={drafts[e.id] ?? saved[e.id]?.answer ?? ""}
+                  onChange={(ev) => setDrafts({ ...drafts, [e.id]: ev.target.value })}
+                  placeholder="在这里写下你的句子/段落……"
+                />
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>
+                  当前 {wc(e.id)} 词{e.minWords ? `（要求 ${e.minWords}${e.maxWords ? `-${e.maxWords}` : " 以上"} 词）` : ""}
+                </div>
+              </>
+            )}
+            {!isAdmin && (
+              <div className="row-actions" style={{ marginTop: 8 }}>
+                <button className="btn" onClick={() => submitOne(e)} disabled={savingId === e.id}>
+                  {savingId === e.id ? "提交中…" : saved[e.id] ? "再试一次" : "提交本题"}
+                </button>
+                {rv ? (
+                  <span style={{ fontSize: 12.5, color: "var(--brand-ink)" }}>
+                    {rv.kind === "choice" ? `正确答案：${e.options[rv.index]}` : `参考答案：${rv.answers.join(" / ")}`}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                    {lesson.maxAttempts ? `本题还可作答 ${left} 次` : "本题不限次数"}；答对或次数用尽后揭示答案
+                  </span>
+                )}
+              </div>
+            )}
+          </>
         )}
-      </div>
-      <div className="notice-body" style={{ marginBottom: 8, whiteSpace: "pre-wrap" }}>{e.prompt}</div>
-      {e.type === "choice" ? (
-        e.options.map((o, oi) => (
-          <label className="row-actions" key={oi} style={{ gap: 8, cursor: "pointer", marginBottom: 6 }}>
-            <input
-              type="radio"
-              name={`q-${e.id}`}
-              checked={answers[e.id] === String(oi)}
-              onChange={() => setAnswers({ ...answers, [e.id]: String(oi) })}
-            />
-            {o}
-          </label>
-        ))
-      ) : (
-        <>
-          <textarea
-            style={{ minHeight: 80 }}
-            value={answers[e.id] || ""}
-            onChange={(ev) => setAnswers({ ...answers, [e.id]: ev.target.value })}
-            placeholder="在这里写下你的句子/段落……"
-          />
-          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>
-            当前 {wc(e.id)} 词{e.minWords ? `（要求 ${e.minWords}${e.maxWords ? `-${e.maxWords}` : " 以上"} 词）` : ""}
-          </div>
-        </>
-      )}
-    </>
-  );
+      </>
+    );
+  };
+
+  const cur = lesson.blocks[page];
+  const curEx = cur?.type === "exercise" ? exerciseOf(cur) : null;
+  const overall = hasExercises && !isAdmin ? lessonScoreSummary() : null;
 
   return (
     <div className="modal-mask" onClick={onClose}>
@@ -623,116 +770,84 @@ function LessonCard({ lesson, attemptsUsed = 0, isAdmin, onClose, onSubmitted })
           <button className="btn-ghost" onClick={onClose}>关闭</button>
         </div>
 
-        {result ? (
-          <>
-            <div className="ok-box">
-              第 {result.attempt}{result.maxAttempts ? `/${result.maxAttempts}` : ""} 次作答已提交
-              {result.grade.pendingReview
-                ? "：客观题已自动判分，写作题待老师批改。"
-                : `，本次得分 ${result.grade.totalScore}/${result.grade.maxScore}。`}
-              {result.canRetry
-                ? "客观题答错的题目可以先回头看看讲解，再试一次（标准答案会在次数用尽后揭示）。"
-                : "作答次数已用完，标准答案已在下方揭示，成绩以本次为准。"}
-            </div>
-            {lesson.exercises.map((e) => {
-              const r = exResult(e);
-              return (
-                <div className="notice-item" key={e.id}>
-                  <div className="notice-head">
-                    <b>{e.type === "choice" ? "选择题" : "填空题"}</b>
-                    {r.auto != null ? (
-                      <span className={r.correct ? "plan-badge member" : "plan-badge guest"}>
-                        {r.correct ? `✓ 正确 +${e.points} 分` : reveal ? "✗ 错误 +0 分" : "✗ 还不对，再试一下"}
-                      </span>
-                    ) : (
-                      <span className="plan-badge guest">老师批改中</span>
-                    )}
-                  </div>
-                  <div className="notice-body" style={{ marginBottom: 6, whiteSpace: "pre-wrap" }}>{e.prompt}</div>
-                  {e.type === "choice" ? (
-                    <div className="notice-body">
-                      你的选择：{e.options[Number(r?.answer)]}
-                      {r.correct ? " ✓" : reveal ? `（正确答案：${e.options[e.answer]}）` : "（答案暂不揭示，再试一次）"}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="essay-view">{r?.answer || "（未作答）"}</div>
-                      {e.mode === "unique" && !r?.correct && reveal && (
-                        <div className="notice-body" style={{ color: "var(--brand-ink)" }}>参考答案：{e.answers.join(" / ")}</div>
-                      )}
-                      {e.mode === "unique" && !r?.correct && !reveal && (
-                        <div className="notice-body" style={{ color: "var(--ink-3)" }}>答案暂不揭示——对照讲解材料再试试看</div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-            <div className="row-actions">
-              {result.canRetry && <button className="btn" onClick={retry}>再试一次{result.attemptsLeft != null ? `（还可 ${result.attemptsLeft} 次）` : ""}</button>}
-              <button className="btn-ghost" onClick={onSubmitted}>完成</button>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* 进度条 */}
-            <div className="lesson-progress">
-              <div className="lesson-progress-bar" style={{ width: `${((page + 1) / total) * 100}%` }} />
-            </div>
-            <div className="lesson-card-meta">
-              <span>第 {page + 1} / {total} 页</span>
-              <span>{lesson.blocks[page].type === "md" ? "📖 讲解" : "✏️ 练习"}</span>
-            </div>
+        {/* 进度条 */}
+        <div className="lesson-progress">
+          <div className="lesson-progress-bar" style={{ width: `${((page + 1) / total) * 100}%` }} />
+        </div>
+        <div className="lesson-card-meta">
+          <span>第 {page + 1} / {total} 页</span>
+          <span>{cur?.type === "md" ? "📖 讲解" : cur?.type === "material" ? "📄 材料" : "✏️ 练习"}</span>
+          {overall && (
+            <span>
+              得分 {overall.score}/{overall.total}
+              {overall.pending ? " · 含待批改" : ""}
+            </span>
+          )}
+        </div>
 
-            <div className="lesson-card-body">
-              {lesson.blocks[page].type === "md" ? (
-                <Markdown text={lesson.blocks[page].text} />
-              ) : (
-                renderExerciseInput(exerciseOf(lesson.blocks[page]))
-              )}
-              {isAdmin && <div className="course-meta" style={{ marginTop: 10 }}>（预览模式：不会提交、不计成绩）</div>}
+        <div
+          className="lesson-card-body"
+          style={curEx && matOpen && materials.length > 0 ? { display: "flex", gap: 14, alignItems: "flex-start" } : undefined}
+        >
+          {curEx && matOpen && materials.length > 0 && (
+            <div className="notice-item" style={{ flex: "0 0 45%", maxHeight: "45vh", overflowY: "auto", marginBottom: 0 }}>
+              <b>📄 共享材料</b>
+              <div className="notice-body" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{materials.join("\n\n———\n\n")}</div>
             </div>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {cur?.type === "md" ? (
+              <Markdown text={cur.text} />
+            ) : cur?.type === "material" ? (
+              <div style={{ whiteSpace: "pre-wrap", fontSize: 14.5, lineHeight: 1.8 }}>{cur.text}</div>
+            ) : curEx ? (
+              renderExerciseInput(curEx)
+            ) : null}
+            {isAdmin && <div className="course-meta" style={{ marginTop: 10 }}>（预览模式：不会提交、不计成绩）</div>}
+          </div>
+        </div>
 
-            {error && <div className="error-box">{error}</div>}
+        {curEx && materials.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            <button className="btn-ghost" onClick={() => setMatOpen(!matOpen)}>
+              {matOpen ? "收起材料" : "📄 对照材料"}
+            </button>
+          </div>
+        )}
 
-            <div className="lesson-card-nav">
-              <button className="btn-ghost" onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>
-                ← 上一页
-              </button>
-              {isLast ? (
-                isAdmin ? (
-                  <button className="btn-ghost" onClick={onClose}>结束预览</button>
-                ) : hasExercises ? (
-                  <button className="btn" onClick={submit} disabled={saving}>
-                    {saving ? "提交中…" : "提交作答"}
-                  </button>
-                ) : (
-                  <button className="btn" onClick={finishReadonly}>完成学习 ✓</button>
-                )
-              ) : (
-                <button className="btn" onClick={() => setPage(page + 1)}>下一页 →</button>
-              )}
-            </div>
-            {!isAdmin && hasExercises && (
-              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>
-                {lesson.maxAttempts
-                  ? `本次为第 ${attemptsUsed + 1}/${lesson.maxAttempts} 次作答，以最后一次为准`
-                  : `本次为第 ${attemptsUsed + 1} 次作答（不限次数），以最后一次为准`}
-                ；进度与草稿已自动保存，答对或次数用尽前不揭示标准答案
-              </div>
-            )}
-          </>
+        {error && <div className="error-box">{error}</div>}
+
+        <div className="lesson-card-nav">
+          <button className="btn-ghost" onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>
+            ← 上一页
+          </button>
+          {isLast ? (
+            isAdmin ? (
+              <button className="btn-ghost" onClick={onClose}>结束预览</button>
+            ) : (
+              <button className="btn" onClick={finishReadonly}>完成学习 ✓</button>
+            )
+          ) : (
+            <button className="btn" onClick={() => setPage(page + 1)}>下一页 →</button>
+          )}
+        </div>
+        {!isAdmin && hasExercises && (
+          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 6 }}>
+            逐题提交，每题单独判分{lesson.maxAttempts ? `，每题最多作答 ${lesson.maxAttempts} 次` : "（每题不限次数）"}；
+            答对或次数用尽后揭示该题答案。进度与草稿已自动保存。
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-// ---------- 老师：批改某份阅读 ----------
+// ---------- 老师：批改某份阅读（逐题模型优先，兼容旧整卷记录） ----------
 function LessonGrading({ lessonId, lessonTitle, onClose }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
-  const [editing, setEditing] = useState(null); // 正在批改的 grade id
+  const [editingUser, setEditingUser] = useState(null); // 逐题模型：正在批改的 userId
+  const [editing, setEditing] = useState(null); // 旧模型：正在批改的 grade id
 
   const load = () =>
     get(`/api/lessons/${lessonId}/grades`)
@@ -743,6 +858,20 @@ function LessonGrading({ lessonId, lessonTitle, onClose }) {
     load();
   }, [lessonId]);
 
+  if (error) {
+    return (
+      <div className="modal-mask" onClick={onClose}>
+        <div className="modal-card review-modal" onClick={(ev) => ev.stopPropagation()}>
+          <div className="modal-head">
+            <h2>批改 · {lessonTitle}</h2>
+            <button className="btn-ghost" onClick={onClose}>关闭</button>
+          </div>
+          <div className="error-box">{error}</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal-card review-modal" onClick={(ev) => ev.stopPropagation()}>
@@ -750,41 +879,175 @@ function LessonGrading({ lessonId, lessonTitle, onClose }) {
           <h2>批改 · {lessonTitle}</h2>
           <button className="btn-ghost" onClick={onClose}>关闭</button>
         </div>
-        {error && <div className="error-box">{error}</div>}
         {!data ? (
           <Loading text="加载作答记录…" />
-        ) : data.grades.length === 0 ? (
+        ) : (data.answersByUser || []).length === 0 && data.grades.length === 0 ? (
           <p className="empty-hint">还没有学生作答。</p>
         ) : (
-          <div className="table-wrap">
-            <table className="user-table">
-              <thead>
-                <tr><th>学员</th><th>次数</th><th>提交时间</th><th>客观题</th><th>总分</th><th>状态</th><th>操作</th></tr>
-              </thead>
-              <tbody>
-                {data.grades.map((g) => (
-                  <tr key={g.id}>
-                    <td>{g.realName ? `${g.realName}（${g.username}）` : g.username}</td>
-                    <td><span className="count-badge">{g.attempt || 1}</span></td>
-                    <td>{fmt(g.submittedAt)}</td>
-                    <td>{g.autoScore}/{g.maxAutoScore}</td>
-                    <td><b>{g.pendingReview ? "—" : `${g.totalScore}/${g.maxScore}`}</b></td>
-                    <td>
-                      {g.pendingReview ? <span className="plan-badge guest">待批改</span> : <span className="plan-badge member">已批改</span>}
-                    </td>
-                    <td>
-                      <button className="btn-ghost" onClick={() => setEditing(editing === g.id ? null : g.id)}>
-                        {g.pendingReview ? "批改" : "查看"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            {(data.answersByUser || []).length > 0 && (
+              <>
+                <div className="field-label" style={{ marginTop: 6 }}>逐题作答（每题以最后一次为准）</div>
+                <div className="table-wrap">
+                  <table className="user-table">
+                    <thead>
+                      <tr><th>学员</th><th>已答</th><th>最后提交</th><th>得分</th><th>状态</th><th>操作</th></tr>
+                    </thead>
+                    <tbody>
+                      {data.answersByUser.map((r) => {
+                        const exs = data.lesson.exercises || [];
+                        let score = 0;
+                        let pending = false;
+                        for (const e of exs) {
+                          const s = r.answers[e.id];
+                          if (!s) continue;
+                          if (s.pendingReview) {
+                            if (s.adminScore != null) score += Number(s.adminScore) || 0;
+                            else pending = true;
+                          } else {
+                            score += s.auto || 0;
+                          }
+                        }
+                        const totalPts = exs.reduce((s, e) => s + e.points, 0);
+                        const answered = Object.keys(r.answers).length;
+                        return (
+                          <tr key={r.userId}>
+                            <td>{r.realName ? `${r.realName}（${r.username}）` : r.username}</td>
+                            <td><span className="count-badge">{answered}/{exs.length} 题</span></td>
+                            <td>{fmt(r.lastAt)}</td>
+                            <td><b>{score}/{totalPts}</b></td>
+                            <td>
+                              {pending ? <span className="plan-badge guest">待批改</span> : <span className="plan-badge member">{answered < exs.length ? "部分作答" : "已完成"}</span>}
+                            </td>
+                            <td>
+                              <button className="btn-ghost" onClick={() => setEditingUser(editingUser === r.userId ? null : r.userId)}>
+                                {pending ? "批改" : "查看"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {data.grades.length > 0 && (
+              <>
+                <div className="field-label" style={{ marginTop: 14 }}>旧版整卷作答记录</div>
+                <div className="table-wrap">
+                  <table className="user-table">
+                    <thead>
+                      <tr><th>学员</th><th>次数</th><th>提交时间</th><th>客观题</th><th>总分</th><th>状态</th><th>操作</th></tr>
+                    </thead>
+                    <tbody>
+                      {data.grades.map((g) => (
+                        <tr key={g.id}>
+                          <td>{g.realName ? `${g.realName}（${g.username}）` : g.username}</td>
+                          <td><span className="count-badge">{g.attempt || 1}</span></td>
+                          <td>{fmt(g.submittedAt)}</td>
+                          <td>{g.autoScore}/{g.maxAutoScore}</td>
+                          <td><b>{g.pendingReview ? "—" : `${g.totalScore}/${g.maxScore}`}</b></td>
+                          <td>
+                            {g.pendingReview ? <span className="plan-badge guest">待批改</span> : <span className="plan-badge member">已批改</span>}
+                          </td>
+                          <td>
+                            <button className="btn-ghost" onClick={() => setEditing(editing === g.id ? null : g.id)}>
+                              {g.pendingReview ? "批改" : "查看"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </>
+        )}
+        {editingUser && (
+          <AnswerDetail
+            row={data.answersByUser.find((r) => r.userId === editingUser)}
+            lesson={data.lesson}
+            onSaved={() => { setEditingUser(null); load(); }}
+          />
         )}
         {editing && <GradeDetail grade={data.grades.find((g) => g.id === editing)} lesson={data.lesson} onSaved={() => { setEditing(null); load(); }} />}
       </div>
+    </div>
+  );
+}
+
+// 逐题模型的学生作答详情（含灵活写作批改）
+function AnswerDetail({ row, lesson, onSaved }) {
+  const [scores, setScores] = useState(() => {
+    const init = {};
+    lesson.exercises.filter((e) => e.type === "blank" && e.mode === "flexible").forEach((e) => {
+      init[e.id] = row.answers[e.id]?.adminScore ?? "";
+    });
+    return init;
+  });
+  const [comment, setComment] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await post(`/api/lessons/${lesson.id}/review`, { userId: row.userId, scores, comment });
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div className="field-label">{row.realName ? `${row.realName}（${row.username}）` : row.username} 的作答</div>
+      {lesson.exercises.map((e) => {
+        const s = row.answers[e.id];
+        return (
+          <div className="notice-item" key={e.id}>
+            <div className="notice-head">
+              <b>{e.type === "choice" ? "选择题" : "填空题"}</b>
+              <span className="count-badge">{s ? `${s.attempt} 次` : "未作答"}</span>
+              {s && !s.pendingReview && <span className={s.correct ? "plan-badge member" : "plan-badge guest"}>{s.correct ? `✓ +${e.points}` : "✗ +0"}</span>}
+              {s?.adminScore != null && <span className="plan-badge member">批改：{s.adminScore}/{e.points}</span>}
+            </div>
+            <div className="notice-body" style={{ marginBottom: 6, whiteSpace: "pre-wrap" }}>{e.prompt}</div>
+            {e.type === "choice" ? (
+              <div className="notice-body">学生选择：{s ? e.options[Number(s.answer)] : "—"} ｜ 正确答案：{e.options[e.answer]}</div>
+            ) : (
+              <div className="essay-view">{s?.answer || "（未作答）"}</div>
+            )}
+            {e.type === "blank" && e.mode === "unique" && s && !s.correct && (
+              <div className="notice-body" style={{ color: "var(--brand-ink)" }}>参考答案：{e.answers.join(" / ")}</div>
+            )}
+            {e.type === "blank" && e.mode === "flexible" && s && (
+              <div className="row-actions" style={{ marginTop: 6 }}>
+                <span>得分（0-{e.points}）：</span>
+                <input
+                  type="number"
+                  min="0"
+                  max={e.points}
+                  step="0.5"
+                  style={{ width: 70 }}
+                  value={scores[e.id]}
+                  onChange={(ev) => setScores({ ...scores, [e.id]: ev.target.value })}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <div className="field-label">总评（可选）</div>
+      <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="给这位同学的评语…" />
+      {error && <div className="error-box">{error}</div>}
+      <button className="btn" style={{ marginTop: 8 }} onClick={save} disabled={saving}>
+        {saving ? "保存中…" : "保存批改结果"}
+      </button>
     </div>
   );
 }
