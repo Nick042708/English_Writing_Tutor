@@ -74,3 +74,37 @@ export function Loading({ text }) {
     </div>
   );
 }
+
+// 渲染异常兜底：任何子树渲染出错只显示错误卡片，绝不让整页白屏
+export class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("[UI] 渲染异常：", error, info?.componentStack);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    if (this.props.fallback) return this.props.fallback(this.state.error, () => this.setState({ error: null }));
+    return (
+      <div className="card" style={{ margin: "20px auto", maxWidth: 720 }}>
+        <div className="error-box">
+          <b>😬 这部分内容渲染出错了</b>
+          <div style={{ marginTop: 6, fontSize: 13 }}>
+            数据里可能有格式异常的内容，但不影响其他页面。切回其他标签页再回来即可重试。
+          </div>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "var(--ink-3)", marginTop: 8 }}>
+            {String(this.state.error?.message || this.state.error)}
+          </pre>
+        </div>
+        <button className="btn-ghost" style={{ marginTop: 10 }} onClick={() => this.setState({ error: null })}>
+          重试
+        </button>
+      </div>
+    );
+  }
+}

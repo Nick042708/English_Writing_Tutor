@@ -693,8 +693,14 @@ function SubmissionReview({ submissionId, onClose }) {
           <button className="btn-ghost" onClick={onClose}>关闭</button>
         </div>
         <div className="account-summary">
-          <div className="sum-row"><span>作文任务</span><b>{sub.task}</b></div>
-          <div className="sum-row"><span>AI 评分</span><b>{sub.aiResult?.score?.label ?? sub.aiResult?.score ?? "—"}</b></div>
+          <div className="sum-row"><span>作文任务</span><b>{String(sub.task ?? "")}</b></div>
+          <div className="sum-row"><span>AI 评分</span><b>{(() => {
+            // score 兼容对象 {label, comment} 与字符串两种形态，避免对象被直接渲染导致白屏
+            const s = sub.aiResult?.score;
+            if (s == null) return "—";
+            if (typeof s === "object") return s.label ?? JSON.stringify(s);
+            return String(s);
+          })()}</b></div>
           <div className="sum-row"><span>复核状态</span><b>{sub.status === "reviewed" ? `已复核：${sub.adminReview?.score ?? sub.reviewScore}` : "待复核"}</b></div>
         </div>
         <div className="field-label">学生作文</div>

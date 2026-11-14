@@ -3,6 +3,7 @@ import { CopyButton } from "./shared.jsx";
 import PrintPortal from "./PrintPortal.jsx";
 import { FeedbackReport } from "./reports.jsx";
 import { CHALLENGES } from "../examOptions.js";
+import { sanitizeFeedbackResult } from "../sanitize.js";
 
 const STATUS_LABEL = { good: "良好", warn: "一般", bad: "待提升" };
 
@@ -10,6 +11,8 @@ const STATUS_LABEL = { good: "良好", warn: "一般", bad: "待提升" };
 export default function FeedbackResult({ result, profile, task, essay }) {
   const [printContent, setPrintContent] = useState(null);
   const challengeLabel = CHALLENGES.find((c) => c.id === profile?.challenge)?.label || "匹配我的水平";
+  // 深度净化：AI 返回形状偶发不符（历史记录里存的原始数据也会经过这里），先归一化再渲染
+  result = sanitizeFeedbackResult(result);
 
   return (
     <>

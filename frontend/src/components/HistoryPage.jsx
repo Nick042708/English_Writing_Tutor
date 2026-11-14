@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { get } from "../api.js";
-import { Loading } from "./shared.jsx";
+import { Loading, ErrorBoundary } from "./shared.jsx";
+import { asText } from "../sanitize.js";
 import MaterialsResult from "./MaterialsResult.jsx";
 import FeedbackResult from "./FeedbackResult.jsx";
 
@@ -37,35 +38,9 @@ export default function HistoryPage({ scope }) {
     }
   };
 
-  if (detail) {
-    const r = detail;
-    return (
-      <>
-        <div className="card record-detail-head">
-          <button className="btn-ghost" onClick={() => setDetail(null)}>← 返回列表</button>
-          <div className="rec-sub" style={{ marginTop: 10 }}>
-            {scope === "all" && <>学员：{r.username} · </>}
-            {r.type === "materials" ? "素材生成" : "写作批改"} · {fmtDate(r.createdAt)} · 目标：{r.profile?.target}
-            {r.profile?.challenge ? ` · ${r.profile.challenge === "match" ? "匹配水平" : r.profile.challenge === "stretch" ? "拔高挑战" : "冲刺高分"}` : ""}
-          </div>
-          <div className="rec-task-full">{r.task}</div>
-          {r.type === "feedback" && r.essay && (
-            <details className="essay-collapse">
-              <summary>查看当时的作文原文</summary>
-              <div className="en-text">{r.essay}</div>
-            </details>
-          )}
-        </div>
-        {r.type === "materials" ? (
-          <MaterialsResult result={r.result} profile={r.profile} task={r.task} />
-        ) : (
-          <FeedbackResult result={r.result} profile={r.profile} task={r.task} essay={r.essay} />
-        )}
-      </>
-    );
-  }
-
   // 按修订链合并：同一份作业的多次批改合并为一组（其他记录独立展示）
+  // 注意：必须在 if (detail) 早退之前调用——hooks 不能放在条件返回之后，否则详情页会因
+  // hooks 数量变化触发 React #300 整页白屏（2026-11-14 管理员历史记录白屏的根因）
   const groups = React.useMemo(() => {
     if (!records) return [];
     const out = [];
@@ -86,16 +61,56 @@ export default function HistoryPage({ scope }) {
     return out;
   }, [records]);
 
+  if (detail) {
+    const r = detail;
+    return (
+      <>
+        <div className="card record-detail-head">
+          <button className="btn-ghost" onClick={() => setDetail(null)}>← 返回列表</button>
+          <div className="rec-sub" style={{ marginTop: 10 }}>
+            {scope === "all" && <>{asText(r.username) || "未知学员"} · </>}
+            {r.type === "materials" ? "素材生成" : "写作批改"} · {fmtDate(r.createdAt)} · 目标：{asText(r.profile?.target)}
+            {r.profile?.challenge ? ` · ${r.profile.challenge === "match" ? "匹配水平" : r.profile.challenge === "stretch" ? "拔高挑战" : "冲刺高分"}` : ""}
+          </div>
+          <div className="rec-task-full">{asText(r.task)}</div>
+          {r.type === "feedback" && r.essay && (
+            <details className="essay-collapse">
+              <summary>查看当时的作文原文</summary>
+              <div className="en-text">{asText(r.essay)}</div>
+            </details>
+          )}
+        </div>
+        {/* 单条记录单独兜底：这条数据坏了只影响它自己，返回按钮仍可用 */}
+        <ErrorBoundary key={r.id} fallback={(err) => (
+          <div className="card">
+            <div className="error-box">
+              <b>这条记录的数据格式异常，无法完整展示</b>
+              <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "var(--ink-3)", marginTop: 8 }}>
+                {String(err?.message || err)}
+              </pre>
+            </div>
+          </div>
+        )}>
+          {r.type === "materials" ? (
+            <MaterialsResult result={r.result} profile={r.profile} task={r.task} />
+          ) : (
+            <FeedbackResult result={r.result} profile={r.profile} task={r.task} essay={r.essay} />
+          )}
+        </ErrorBoundary>
+      </>
+    );
+  }
+
   const renderRow = (r) => (
     <div className="rec-row" key={r.id}>
       <span className={`rec-type ${r.type}`}>{r.type === "materials" ? "素材" : "批改"}</span>
       <div className="rec-main">
         <div className="rec-task">
-          {r.assignmentId && `（第 ${r.attempt || "?"} 次批改）`}{r.task}
+          {r.assignmentId && `（第 ${r.attempt || "?"} 次批改）`}{asText(r.task)}
         </div>
         <div className="rec-sub">
-          {scope === "all" && <>{r.username} · </>}
-          {fmtDate(r.createdAt)} · {r.profile?.target}
+          {scope === "all" && <>{asText(r.username) || "未知学员"} · </>}
+          {fmtDate(r.createdAt)} · {asText(r.profile?.target)}
           {r.profile?.challenge ? ` · ${r.profile.challenge === "match" ? "匹配" : r.profile.challenge === "stretch" ? "拔高" : "冲刺"}` : ""}
         </div>
       </div>
@@ -125,7 +140,7 @@ export default function HistoryPage({ scope }) {
           ) : (
             <details key={g.key} className="essay-collapse" style={{ borderBottom: "1px solid var(--line, #eee)" }}>
               <summary>
-                📝 {g.records[0].task.slice(0, 24) || "课程作业"}… · {g.records.length} 次批改记录（点击展开）
+                📝 {String(g.records[0].task || "").slice(0, 24) || "课程作业"}… · {g.records.length} 次批改记录（点击展开）
               </summary>
               {g.records.map(renderRow)}
             </details>

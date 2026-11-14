@@ -7,7 +7,7 @@ import AdminUsersPage from "./components/AdminUsersPage.jsx";
 import CoursesPage from "./components/CoursesPage.jsx";
 import AccountModal from "./components/AccountModal.jsx";
 import AuthPage from "./components/AuthPage.jsx";
-import { Loading } from "./components/shared.jsx";
+import { Loading, ErrorBoundary } from "./components/shared.jsx";
 import { fetchHealth, get, post, setToken, getToken } from "./api.js";
 
 const DEFAULT_PROFILE = { mode: "exam", target: "cet4", cefr: null, challenge: "match" };
@@ -126,12 +126,15 @@ export default function App() {
         <ProfileSelector profile={profile} onChange={setProfile} />
       )}
 
-      {tab === "materials" && <MaterialsPage profile={profile} task={task} setTask={setTask} onUsed={refreshMe} />}
-      {tab === "feedback" && <FeedbackPage profile={profile} task={task} setTask={setTask} onUsed={refreshMe} />}
-      {tab === "history" && <HistoryPage scope="mine" />}
-      {tab === "courses" && <CoursesPage user={user} />}
-      {tab === "admin" && user.role === "admin" && <HistoryPage scope="all" />}
-      {tab === "users" && user.role === "admin" && <AdminUsersPage />}
+      {/* key={tab}：切换标签页时重置错误边界，出错后切走再切回即可自动恢复 */}
+      <ErrorBoundary key={tab}>
+        {tab === "materials" && <MaterialsPage profile={profile} task={task} setTask={setTask} onUsed={refreshMe} />}
+        {tab === "feedback" && <FeedbackPage profile={profile} task={task} setTask={setTask} onUsed={refreshMe} />}
+        {tab === "history" && <HistoryPage scope="mine" />}
+        {tab === "courses" && <CoursesPage user={user} />}
+        {tab === "admin" && user.role === "admin" && <HistoryPage scope="all" />}
+        {tab === "users" && user.role === "admin" && <AdminUsersPage />}
+      </ErrorBoundary>
 
       {showAccount && (
         <AccountModal user={user} onUpdate={setUser} onClose={() => setShowAccount(false)} />

@@ -3,12 +3,15 @@ import { CopyButton, FavButton, useFavorites } from "./shared.jsx";
 import PrintPortal from "./PrintPortal.jsx";
 import { MaterialsReport, FavoritesReport } from "./reports.jsx";
 import { CHALLENGES } from "../examOptions.js";
+import { sanitizeMaterialsResult } from "../sanitize.js";
 
 // 素材结果展示（三层素材 + 收藏夹 + 导出）：素材页与历史记录回看共用
 export default function MaterialsResult({ result, profile, task }) {
   const fav = useFavorites();
   const [printContent, setPrintContent] = useState(null);
   const challengeLabel = CHALLENGES.find((c) => c.id === profile?.challenge)?.label || "匹配我的水平";
+  // 深度净化：AI 返回形状偶发不符（历史记录里存的原始数据也会经过这里），先归一化再渲染
+  result = sanitizeMaterialsResult(result);
 
   const phrases = result.vocab?.phrases || [];
   const structures = result.vocab?.structures || [];
