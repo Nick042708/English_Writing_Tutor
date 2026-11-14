@@ -351,12 +351,20 @@ const isOverdue = (d) => d != null && Date.now() > d;
 // 默认成绩分配：作业 40% / 在线学习 30% / 考试 30%（考试系统上线前自动按可用类别折算）
 const DEFAULT_WEIGHTS = { assignment: 40, lesson: 30, exam: 30 };
 
-// 讲解/练习穿插的块结构：[{type:"md", text} | {type:"exercise", exerciseId}]
+// 讲解/练习穿插的块结构：[{type:"md", text} | {type:"material", text, appliesTo?} | {type:"exercise", exerciseId}]
+// material.appliesTo 为可选的关联题目列表（exerciseId 数组），缺省/空 = 全局材料（与所有题对照）
 // 校验并规范化 blocks，返回 { blocks } 或 { error }
 function validateBlocks(raw, exercises) {
   if (raw == null) return { blocks: null };
   if (!Array.isArray(raw)) return { error: "内容块格式无效" };
   const ids = new Set(exercises.map((e) => e.id));
+  // 题目引用统一解析：允许传真实 id 或「在 exercises 中的下标」
+  const resolveRef = (v) => {
+    const s = String(v ?? "");
+    if (ids.has(s)) return s;
+    const byIndex = exercises[Number(s)]?.id;
+    return byIndex && ids.has(byIndex) ? byIndex : null;
+  };
   const out = [];
   let mdCount = 0;
   for (const b of raw) {
@@ -369,12 +377,18 @@ function validateBlocks(raw, exercises) {
       // 共享材料块：短文/对话等，只贴一次，学生作答时同屏对照
       const text = String(b.text || "").replace(/\s+$/g, "");
       if (!text.trim()) return { error: "材料内容不能为空块" };
-      out.push({ type: "material", text });
+      // 可选关联题目：只在该题作答时显示；不传或为空 = 全局（兼容旧数据）
+      let appliesTo;
+      if (b.appliesTo != null) {
+        if (!Array.isArray(b.appliesTo)) return { error: "材料关联题目格式无效" };
+        const refs = [...new Set(b.appliesTo.map(resolveRef))];
+        if (refs.some((r) => !r)) return { error: "材料关联的题目不存在" };
+        if (refs.length > 0) appliesTo = refs;
+      }
+      out.push(appliesTo ? { type: "material", text, appliesTo } : { type: "material", text });
     } else if (b?.type === "exercise") {
-      const eid = String(b.exerciseId ?? b.index ?? "");
-      // 允许前端用「在 exercises 中的下标」引用，转换为真实 id
-      const ref = ids.has(eid) ? eid : exercises[Number(eid)]?.id;
-      if (!ref || !ids.has(ref)) return { error: "练习块引用的题目不存在" };
+      const ref = resolveRef(b.exerciseId ?? b.index);
+      if (!ref) return { error: "练习块引用的题目不存在" };
       out.push({ type: "exercise", exerciseId: ref });
     } else {
       return { error: "内容块类型无效" };

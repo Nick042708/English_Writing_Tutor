@@ -153,5 +153,66 @@ ok("编辑后练习题 id 保留", exAfter.id === exIdBefore);
 const d3 = (await api("GET", `/api/courses/${course.id}`, null, stu.token)).data;
 ok("编辑后学生作答记录仍对应题目", d3.myLessonAnswers.some((a) => a.exerciseId === exIdBefore));
 
+// ---- 材料块手动关联题目（appliesTo）----
+const pubScope = await api(
+  "POST",
+  `/api/courses/${course.id}/lessons`,
+  {
+    title: "材料关联测试",
+    blocks: [
+      { type: "material", text: "只给第一题的材料", appliesTo: [0] },
+      { type: "material", text: "全局材料（不传 appliesTo）" },
+      { type: "exercise", index: 0 },
+      { type: "exercise", index: 1 },
+    ],
+    exercises: [
+      { type: "choice", prompt: "S1", options: ["A", "B"], answer: 0, points: 2 },
+      { type: "choice", prompt: "S2", options: ["A", "B"], answer: 1, points: 2 },
+    ],
+    deadline: future,
+  },
+  admin.token
+);
+ok("发布带关联材料的阅读", pubScope.status === 200);
+const scopeLesson = (await api("GET", `/api/courses/${course.id}`, null, admin.token)).data.lessons.find((l) => l.title === "材料关联测试");
+const scopeExIds = scopeLesson.exercises.map((e) => e.id);
+const mats = scopeLesson.blocks.filter((b) => b.type === "material");
+ok("关联材料转换为真实 exerciseId", mats[0]?.appliesTo?.length === 1 && mats[0].appliesTo[0] === scopeExIds[0]);
+ok("无 appliesTo 的材料保持全局", mats[1] != null && mats[1].appliesTo === undefined);
+
+const badScope = await api(
+  "POST",
+  `/api/courses/${course.id}/lessons`,
+  {
+    title: "坏引用测试",
+    blocks: [{ type: "material", text: "x", appliesTo: [99] }, { type: "exercise", index: 0 }],
+    exercises: [{ type: "choice", prompt: "S", options: ["A", "B"], answer: 0, points: 2 }],
+  },
+  admin.token
+);
+ok("关联不存在的题目被拒绝", badScope.status === 400);
+
+// 编辑：改关联后映射仍正确（题目顺序不变）
+await api(
+  "PATCH",
+  `/api/courses/${course.id}/lessons/${scopeLesson.id}`,
+  {
+    title: "材料关联测试",
+    blocks: [
+      { type: "material", text: "只给第一题的材料", appliesTo: [1] },
+      { type: "exercise", index: 0 },
+      { type: "exercise", index: 1 },
+    ],
+    exercises: [
+      { type: "choice", prompt: "S1", options: ["A", "B"], answer: 0, points: 2 },
+      { type: "choice", prompt: "S2", options: ["A", "B"], answer: 1, points: 2 },
+    ],
+  },
+  admin.token
+);
+const scopeLesson2 = (await api("GET", `/api/courses/${course.id}`, null, admin.token)).data.lessons.find((l) => l.id === scopeLesson.id);
+const mats2 = scopeLesson2.blocks.filter((b) => b.type === "material");
+ok("编辑后关联改到第二题", mats2[0]?.appliesTo?.[0] === scopeExIds[1]);
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

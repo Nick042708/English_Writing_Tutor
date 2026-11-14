@@ -288,9 +288,14 @@ const nextKey = () => `bk-${Date.now()}-${blockKeySeq++}`;
 // 从已发布的阅读还原编辑器状态
 function stateFromLesson(l) {
   const exById = new Map((l.exercises || []).map((e) => [e.id, e]));
+  // 材料的 appliesTo（exerciseId 列表）还原为题目序号列表，便于编辑器勾选
+  const exIndex = new Map((l.exercises || []).map((e, i) => [e.id, i]));
   const blocks = (l.blocks || (l.content ? [{ type: "md", text: l.content }] : [])).map((b) => {
     if (b.type === "md") return { key: nextKey(), type: "md", text: b.text };
-    if (b.type === "material") return { key: nextKey(), type: "material", text: b.text };
+    if (b.type === "material") {
+      const scope = (b.appliesTo || []).map((id) => exIndex.get(id)).filter((v) => v != null);
+      return { key: nextKey(), type: "material", text: b.text, scope: scope.length ? scope : null };
+    }
     const e = exById.get(b.exerciseId);
     if (!e) return null;
     return {
@@ -329,7 +334,7 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
   const [saving, setSaving] = useState(false);
 
   const addMd = () => setBlocks([...blocks, { key: nextKey(), type: "md", text: "" }]);
-  const addMaterial = () => setBlocks([...blocks, { key: nextKey(), type: "material", text: "" }]);
+  const addMaterial = () => setBlocks([...blocks, { key: nextKey(), type: "material", text: "", scope: null }]); // scope: null=全部题目，数组=关联的题目序号
   const addChoice = () =>
     setBlocks([...blocks, { key: nextKey(), type: "exercise", data: { type: "choice", prompt: "", options: ["", ""], answer: 0, points: 2 } }]);
   const addBlank = () =>
@@ -355,7 +360,8 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
       if (b.type === "md") {
         outBlocks.push({ type: "md", text: b.text });
       } else if (b.type === "material") {
-        outBlocks.push({ type: "material", text: b.text });
+        // scope 为空 = 全局材料；指定题目时以「题目序号」提交，后端转换为 exerciseId
+        outBlocks.push(b.scope && b.scope.length ? { type: "material", text: b.text, appliesTo: b.scope } : { type: "material", text: b.text });
       } else {
         const d = b.data;
         exercises.push(
@@ -395,7 +401,28 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
     }
   };
 
+  // 题目清单（按出现顺序编号）：材料关联选择与预览共用
+  const exItems = [];
+  for (const b of blocks) {
+    if (b.type === "exercise") {
+      exItems.push({
+        key: b.key,
+        kind: b.data.type === "choice" ? "选择题" : b.data.mode === "unique" ? "填空题" : "写作填空",
+        label: String(b.data.prompt || "").replace(/\s+/g, " ").slice(0, 18),
+      });
+    }
+  }
+  const toggleScope = (key, idx, on) =>
+    setBlocks(
+      blocks.map((b) => {
+        if (b.key !== key || b.type !== "material") return b;
+        const cur = Array.isArray(b.scope) ? b.scope : [];
+        return { ...b, scope: on ? [...cur, idx] : cur.filter((x) => x !== idx) };
+      })
+    );
+
   if (preview) {
+    const exNoOf = (key) => exItems.findIndex((x) => x.key === key) + 1;
     return (
       <div style={{ marginTop: 12 }}>
         <div className="row-actions" style={{ marginBottom: 10 }}>
@@ -411,6 +438,11 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
           ) : (
             <div className="notice-item" key={b.key}>
               <b>{b.type === "material" ? "📄 共享材料（学生作答时同屏对照）" : "📖 讲解"}</b>
+              {b.type === "material" && Array.isArray(b.scope) && b.scope.length > 0 && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+                  仅关联：{b.scope.map((i) => `第${i + 1}题`).join("、")}
+                </div>
+              )}
               <div className="notice-body" style={{ marginTop: 6 }}><Markdown text={b.text} /></div>
             </div>
           )
@@ -446,13 +478,46 @@ function LessonEditor({ courseId, initialLesson, onDone }) {
               placeholder={"支持 Markdown：## 小标题、**加粗**、- 列表、> 引用、表格、代码块……\n写知识点讲解、范文示例、技巧总结……"}
             />
           ) : b.type === "material" ? (
-            <textarea
-              className="lesson-editor"
-              style={{ minHeight: 120 }}
-              value={b.text}
-              onChange={(e) => patchBlock(b.key, { text: e.target.value })}
-              placeholder={"共享材料：粘贴短文 / 对话 / 图表描述……（保留换行，学生作答时可同屏对照，不用在每道题里重复粘贴）"}
-            />
+            <>
+              <textarea
+                className="lesson-editor"
+                style={{ minHeight: 120 }}
+                value={b.text}
+                onChange={(e) => patchBlock(b.key, { text: e.target.value })}
+                placeholder={"共享材料：粘贴短文 / 对话 / 图表描述……（保留换行，学生作答时可同屏对照，不用在每道题里重复粘贴）"}
+              />
+              <div style={{ marginTop: 8, fontSize: 13 }}>
+                <span style={{ color: "var(--ink-2)" }}>关联题目：</span>
+                <select
+                  value={b.scope == null ? "all" : "custom"}
+                  onChange={(e) => patchBlock(b.key, { scope: e.target.value === "all" ? null : [] })}
+                >
+                  <option value="all">全部题目（全局材料）</option>
+                  <option value="custom">指定题目…</option>
+                </select>
+                {b.scope != null && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 6 }}>
+                    {exItems.length === 0 && (
+                      <span style={{ color: "var(--ink-3)" }}>这篇还没有练习题——先在下方添加题目，再回来勾选关联</span>
+                    )}
+                    {exItems.map((ex, n) => (
+                      <label key={ex.key} style={{ fontSize: 12.5, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={b.scope.includes(n)}
+                          onChange={(e) => toggleScope(b.key, n, e.target.checked)}
+                        />{" "}
+                        第{n + 1}题 {ex.kind}
+                        {ex.label ? `·${ex.label}` : ""}
+                      </label>
+                    ))}
+                    {exItems.length > 0 && b.scope.length === 0 && (
+                      <span style={{ color: "#b3372a" }}>还没勾选任何题目：保存后将不会在任何题目旁显示，请至少勾选一题</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
           ) : (
             <ExerciseFields data={b.data} patch={(kv) => patchEx(b.key, kv)} />
           )}
@@ -592,7 +657,12 @@ function LessonCard({ lesson, myAnswers = [], isAdmin, onClose, onSubmitted }) {
 
   const total = lesson.blocks.length;
   const isLast = page >= total - 1;
-  const materials = lesson.blocks.filter((b) => b.type === "material").map((b) => b.text);
+  // 材料按题关联：appliesTo 缺省/为空 = 全局材料（兼容旧数据），否则只在关联的题目旁显示
+  const materialBlocks = lesson.blocks.filter((b) => b.type === "material");
+  const materialsFor = (exId) =>
+    materialBlocks
+      .filter((m) => !m.appliesTo || m.appliesTo.length === 0 || m.appliesTo.includes(exId))
+      .map((m) => m.text);
 
   useEffect(() => {
     saveProgress(lesson.id, { page, drafts, matOpen, done: initial.done });
@@ -760,6 +830,7 @@ function LessonCard({ lesson, myAnswers = [], isAdmin, onClose, onSubmitted }) {
 
   const cur = lesson.blocks[page];
   const curEx = cur?.type === "exercise" ? exerciseOf(cur) : null;
+  const curMaterials = curEx ? materialsFor(curEx.id) : [];
   const overall = hasExercises && !isAdmin ? lessonScoreSummary() : null;
 
   return (
@@ -787,12 +858,12 @@ function LessonCard({ lesson, myAnswers = [], isAdmin, onClose, onSubmitted }) {
 
         <div
           className="lesson-card-body"
-          style={curEx && matOpen && materials.length > 0 ? { display: "flex", gap: 14, alignItems: "flex-start" } : undefined}
+          style={curEx && matOpen && curMaterials.length > 0 ? { display: "flex", gap: 14, alignItems: "flex-start" } : undefined}
         >
-          {curEx && matOpen && materials.length > 0 && (
+          {curEx && matOpen && curMaterials.length > 0 && (
             <div className="notice-item" style={{ flex: "0 0 45%", maxHeight: "45vh", overflowY: "auto", marginBottom: 0 }}>
-              <b>📄 共享材料</b>
-              <div className="notice-body" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{materials.join("\n\n———\n\n")}</div>
+              <b>📄 共享材料{materialBlocks.length > 1 ? `（本题相关 ${curMaterials.length} 篇）` : ""}</b>
+              <div className="notice-body" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{curMaterials.join("\n\n———\n\n")}</div>
             </div>
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -807,7 +878,7 @@ function LessonCard({ lesson, myAnswers = [], isAdmin, onClose, onSubmitted }) {
           </div>
         </div>
 
-        {curEx && materials.length > 0 && (
+        {curEx && curMaterials.length > 0 && (
           <div style={{ marginTop: 6 }}>
             <button className="btn-ghost" onClick={() => setMatOpen(!matOpen)}>
               {matOpen ? "收起材料" : "📄 对照材料"}
